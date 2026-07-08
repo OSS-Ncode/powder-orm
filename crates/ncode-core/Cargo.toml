@@ -11,6 +11,11 @@ description = "Zero-copy columnar database engine core (Ncode)"
 thiserror.workspace = true
 tokio.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Persistent worker pool for the parallel table scan — avoids per-query
+# thread spawn/teardown.
+rayon = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Used by the profiling harness so measurements match the bindings' allocator.
+mimalloc = "0.1"

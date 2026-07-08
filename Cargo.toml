@@ -4,12 +4,13 @@ members = [
     "crates/ncode-core",
     "crates/ncode-node",
     "crates/ncode-python",
+    "crates/powder-cli",
 ]
 
 # The language-binding crates build C dynamic libraries and need their own
 # toolchains (napi-cli / maturin). Keep the core in the default build set and
 # let the bindings opt in explicitly so `cargo build` from the root stays fast.
-default-members = ["crates/ncode-core"]
+default-members = ["crates/ncode-core", "crates/powder-cli"]
 
 [workspace.package]
 version = "0.1.0"

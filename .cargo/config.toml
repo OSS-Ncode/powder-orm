@@ -1,0 +1,8 @@
+# Performance-tuned SQLite build (sqlite.org "recommended compile-time
+# options" subset that does not remove any API symbol):
+# - DEFAULT_MEMSTATUS=0: no global mutex + counters on every allocation
+# - USE_ALLOCA: stack-allocate small parser/VM scratch
+# - LIKE_DOESNT_MATCH_BLOBS: cheaper LIKE
+# - MAX_EXPR_DEPTH=0: no expression-depth bookkeeping
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_ALLOCA=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1 -DSQLITE_MAX_EXPR_DEPTH=0"

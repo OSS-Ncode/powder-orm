@@ -16,12 +16,24 @@ export { Query, decodeBatch };
 export type { Param, NcodeBatch };
 export { DataType } from "./reader.js";
 export type { NcodeColumn, Scalar } from "./reader.js";
+export { PowderTable, PowderError } from "./orm.js";
+export type {
+  ColumnMeta,
+  ColumnType,
+  FindOptions,
+  RelationMeta,
+  TableMeta,
+  Where,
+  WhereOps,
+} from "./orm.js";
 
 // The compiled addon (`napi build` emits `ncode-node.<platform>.node`). A
 // generated `index.node` loader is conventional; fall back to a direct require.
 interface NativeClient {
   execute(sql: string, params?: Param[]): Promise<number>;
   query(sql: string, params?: Param[]): Promise<Buffer>;
+  /** Sync query-cache probe; non-null only for a fresh repeat on `:memory:`. */
+  queryCached(sql: string, params?: Param[]): Buffer | null;
 }
 interface NativeModule {
   connect(url: string): Promise<NativeClient>;
@@ -53,8 +65,12 @@ export class Client {
     return this.inner.execute(sql, params);
   }
 
-  /** Run a query; resolves to a decoded, zero-copy columnar {@link NcodeBatch}. */
+  /** Run a query; resolves to a decoded, zero-copy columnar {@link NcodeBatch}.
+   * A repeat of an identical read-only query on an unchanged `:memory:`
+   * database is answered synchronously from the engine's result cache. */
   async query(sql: string, params: Param[] = []): Promise<NcodeBatch> {
+    const cached = this.inner.queryCached(sql, params);
+    if (cached) return decodeBatch(cached);
     const bytes = await this.inner.query(sql, params);
     return decodeBatch(bytes);
   }
@@ -63,5 +79,27 @@ export class Client {
   async run(query: Query): Promise<NcodeBatch> {
     const { sql, params } = query.build();
     return this.query(sql, params);
+  }
+
+  /**
+   * Run `fn` inside a transaction: `BEGIN IMMEDIATE` before, `COMMIT` on
+   * normal return, `ROLLBACK` when `fn` throws (the error is re-thrown).
+   * Statements issued through this client inside `fn` join the transaction —
+   * the client serializes access to its single connection.
+   */
+  async transaction<T>(fn: (tx: this) => Promise<T>): Promise<T> {
+    await this.execute("BEGIN IMMEDIATE");
+    try {
+      const result = await fn(this);
+      await this.execute("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        await this.execute("ROLLBACK");
+      } catch {
+        // The original error is the one worth surfacing.
+      }
+      throw err;
+    }
   }
 }

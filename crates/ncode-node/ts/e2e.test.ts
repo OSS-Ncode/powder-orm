@@ -23,7 +23,11 @@ test("node end-to-end: async engine + zero-copy reader", async () => {
 
   const ids = batch.column("id")!;
   assert.equal(ids.type, DataType.Int64);
-  assert.deepEqual(ids.toArray(), [1n, 2n, 3n]); // int64 -> BigInt
+  // int64 in the float53-safe range reads as `number`; wider stays bigint.
+  assert.deepEqual(ids.toArray(), [1, 2, 3]);
+  await db.execute("INSERT INTO users (id, name, score) VALUES (9007199254740993, 'big', 0)");
+  const wide = await db.query("SELECT id FROM users WHERE name = 'big'");
+  assert.equal(wide.column("id")!.get(0), 9007199254740993n); // beyond 2^53 -> BigInt
 
   const names = batch.column("name")!;
   assert.equal(names.type, DataType.Utf8);
@@ -36,7 +40,7 @@ test("node end-to-end: async engine + zero-copy reader", async () => {
   assert.equal(scores.get(2), -1.25);
 
   assert.deepEqual(batch.toRows()[2], {
-    id: 3n,
+    id: 3,
     name: "héllo 🌍",
     score: -1.25,
   });

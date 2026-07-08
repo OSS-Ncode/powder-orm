@@ -24,6 +24,7 @@ from .query import Param, Query
 __all__ = [
     "connect",
     "Client",
+    "Transaction",
     "Query",
     "Batch",
     "Column",
@@ -31,6 +32,28 @@ __all__ = [
     "decode_batch",
     "Param",
 ]
+
+
+class Transaction:
+    """``async with client.transaction():`` — BEGIN IMMEDIATE on enter,
+    COMMIT on clean exit, ROLLBACK when the block raises."""
+
+    def __init__(self, client: "Client"):
+        self._client = client
+
+    async def __aenter__(self) -> "Client":
+        await self._client.execute("BEGIN IMMEDIATE")
+        return self._client
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is None:
+            await self._client.execute("COMMIT")
+        else:
+            try:
+                await self._client.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001 — surface the original error
+                pass
+        return False
 
 
 class Client:
@@ -42,6 +65,10 @@ class Client:
     async def execute(self, sql: str, params: Optional[Sequence[Param]] = None) -> int:
         """Run a non-row statement (INSERT/UPDATE/DDL); returns rows affected."""
         return await self._inner.execute(sql, list(params) if params else None)
+
+    def transaction(self) -> Transaction:
+        """Return an async context manager wrapping a transaction."""
+        return Transaction(self)
 
     async def query(
         self, sql: str, params: Optional[Sequence[Param]] = None

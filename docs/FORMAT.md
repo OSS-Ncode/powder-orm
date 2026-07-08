@@ -38,7 +38,7 @@ what lets a reader alias numeric buffers as `Float64Array` / `BigInt64Array`
 | 0      | 4    | `name_off`     | absolute offset of the column name           |
 | 4      | 4    | `name_len`     | length in bytes of the UTF-8 name            |
 | 8      | 1    | `dtype`        | `0`=Int64 `1`=Float64 `2`=Bool `3`=Utf8      |
-| 9      | 1    | `flags`        | bit0 = has validity bitmap                   |
+| 9      | 1    | `flags`        | bit0 = has validity bitmap; bit1 = Utf8 char data is pure ASCII (hint: readers may decode the whole buffer once and slice; ignoring it is always correct) |
 | 10     | 2    | `reserved`     |                                              |
 | 12     | 4    | `validity_off` | absolute; valid only if bit0 set             |
 | 16     | 4    | `validity_len` | bytes = `ceil(num_rows / 8)`                 |

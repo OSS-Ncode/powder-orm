@@ -9,10 +9,53 @@
 //! Every Rust `async fn` below is surfaced to JavaScript as a `Promise` — the
 //! napi-rs `tokio_rt` runtime drives the core's `Future`s.
 
+use std::ffi::c_void;
+use std::sync::Arc;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use ncode_core::{Client as CoreClient, Value};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// An NCB buffer shared with the core's query cache, surfaced to V8 as an
+/// *external* Buffer aliasing the cached bytes — no copy at any size. The
+/// `Arc` travels in the finalize hint, so the bytes outlive every JS view.
+/// The reader API only reads; mutating the raw Buffer is out of contract.
+pub struct NcbBuffer(Arc<Vec<u8>>);
+
+impl ToNapiValue for NcbBuffer {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let len = val.0.len();
+        let mut result = std::ptr::null_mut();
+        if len == 0 {
+            let mut data = std::ptr::null_mut();
+            check_status!(
+                sys::napi_create_buffer(env, 0, &mut data, &mut result),
+                "failed to create empty buffer"
+            )?;
+            return Ok(result);
+        }
+
+        unsafe extern "C" fn finalize(_env: sys::napi_env, _data: *mut c_void, hint: *mut c_void) {
+            drop(Box::from_raw(hint as *mut Arc<Vec<u8>>));
+        }
+
+        let data = val.0.as_ptr() as *mut c_void;
+        let hint = Box::into_raw(Box::new(val.0)) as *mut c_void;
+        let status = sys::napi_create_external_buffer(env, len, data, Some(finalize), hint, &mut result);
+        if status != sys::Status::napi_ok {
+            drop(Box::from_raw(hint as *mut Arc<Vec<u8>>));
+            return Err(Error::new(
+                Status::GenericFailure,
+                format!("failed to create external buffer (status {status})"),
+            ));
+        }
+        Ok(result)
+    }
+}
 
 /// Convert a core error into a JS-friendly napi error.
 fn map_err(e: ncode_core::Error) -> Error {
@@ -70,14 +113,24 @@ impl Client {
 
     /// Run a query. Resolves to a `Buffer` holding the NCB columnar payload,
     /// which `decodeBatch()` in the TS wrapper turns into zero-copy typed
-    /// arrays. The `Vec<u8>` is transferred to V8 as an external buffer.
+    /// arrays. The bytes are shared with the core's query cache and handed to
+    /// V8 as an external buffer — no copy on the way out.
     #[napi]
-    pub async fn query(&self, sql: String, params: Option<Vec<ParamValue>>) -> Result<Buffer> {
+    pub async fn query(&self, sql: String, params: Option<Vec<ParamValue>>) -> Result<NcbBuffer> {
         let bytes = self
             .inner
-            .query_bytes(&sql, to_values(params))
+            .query_bytes_shared(&sql, to_values(params))
             .await
             .map_err(map_err)?;
-        Ok(Buffer::from(bytes))
+        Ok(NcbBuffer(bytes))
+    }
+
+    /// Synchronous query-cache probe: returns the cached NCB buffer for an
+    /// identical prior query on an unchanged `:memory:` database, or `null`.
+    /// A hit skips the async bridge, the thread hop, the scan, and the encode
+    /// entirely — this is the microsecond path for repeated reads.
+    #[napi]
+    pub fn query_cached(&self, sql: String, params: Option<Vec<ParamValue>>) -> Option<NcbBuffer> {
+        self.inner.probe_cache(&sql, to_values(params)).map(NcbBuffer)
     }
 }

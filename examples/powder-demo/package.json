@@ -1,0 +1,9 @@
+{
+  "name": "powder-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "demo": "tsc -p tsconfig.json && node demo.js"
+  }
+}

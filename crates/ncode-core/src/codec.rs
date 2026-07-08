@@ -44,6 +44,9 @@ const MAGIC: &[u8; 4] = b"NCB1";
 const VERSION: u16 = 1;
 const HEADER_LEN: usize = 24;
 const COLDIR_LEN: usize = 40;
+/// Directory flag bit1: the column's Utf8 char data is pure ASCII. A hint —
+/// readers may use it for one-shot decoding; ignoring it is always correct.
+const FLAG_ASCII: u8 = 2;
 
 fn align8(v: &mut Vec<u8>) {
     while v.len() % 8 != 0 {
@@ -131,7 +134,7 @@ pub fn encode(batch: &RecordBatch) -> Vec<u8> {
 
     for (i, col) in batch.columns.iter().enumerate() {
         // Validity bitmap.
-        let (validity_off, validity_len, flags) = match &col.validity {
+        let (validity_off, validity_len, mut flags) = match &col.validity {
             Some(bits) => {
                 align8(&mut out);
                 let off = out.len() as u32;
@@ -140,6 +143,11 @@ pub fn encode(batch: &RecordBatch) -> Vec<u8> {
             }
             None => (0, 0, 0u8),
         };
+        if let ColumnData::Utf8 { data, .. } = &col.data {
+            if data.is_ascii() {
+                flags |= FLAG_ASCII;
+            }
+        }
 
         // Payload buffer(s).
         let (buf1_off, buf1_len, buf2_off, buf2_len) = match &col.data {
@@ -228,6 +236,220 @@ pub fn encode(batch: &RecordBatch) -> Vec<u8> {
     }
 
     out
+}
+
+/// One column supplied as ordered slices (e.g. per-thread scan chunks): the
+/// chunked twin of [`encode`], writing the identical NCB layout without first
+/// concatenating the chunks into one contiguous column. Only null-free
+/// columns are supported — callers with validity data merge and use
+/// [`encode`].
+pub(crate) enum ColParts<'a> {
+    Int(Vec<&'a [i64]>),
+    Float(Vec<&'a [f64]>),
+    /// Per part: (offsets including the leading 0, char data). `ascii` sets
+    /// the directory's pure-ASCII hint bit.
+    Utf8 {
+        parts: Vec<(&'a [u32], &'a [u8])>,
+        ascii: bool,
+    },
+}
+
+pub(crate) fn encode_parts(names: &[String], cols: &[ColParts<'_>], nrows: usize) -> Vec<u8> {
+    let ncols = cols.len();
+    let dir_off = HEADER_LEN;
+    let names_off = dir_off + ncols * COLDIR_LEN;
+
+    // ---- pass 1: exact layout (every offset is known before writing) ----
+    struct Layout {
+        dtype: u8,
+        flags: u8,
+        buf1_off: usize,
+        buf1_len: usize,
+        buf2_off: usize,
+        buf2_len: usize,
+    }
+    let mut pads: Vec<(usize, usize)> = Vec::new();
+    let mut pos = names_off + names.iter().map(String::len).sum::<usize>();
+    let names_end = pos;
+    let mut align = |pos: &mut usize, pads: &mut Vec<(usize, usize)>| {
+        let pad = (8 - (*pos % 8)) % 8;
+        if pad > 0 {
+            pads.push((*pos, pad));
+            *pos += pad;
+        }
+    };
+
+    align(&mut pos, &mut pads);
+    let mut layouts = Vec::with_capacity(ncols);
+    for col in cols {
+        match col {
+            ColParts::Int(_) | ColParts::Float(_) => {
+                align(&mut pos, &mut pads);
+                let off = pos;
+                pos += nrows * 8;
+                layouts.push(Layout {
+                    dtype: if matches!(col, ColParts::Int(_)) { 0 } else { 1 },
+                    flags: 0,
+                    buf1_off: off,
+                    buf1_len: nrows * 8,
+                    buf2_off: 0,
+                    buf2_len: 0,
+                });
+            }
+            ColParts::Utf8 { parts, ascii } => {
+                align(&mut pos, &mut pads);
+                let off1 = pos;
+                pos += (nrows + 1) * 4;
+                align(&mut pos, &mut pads);
+                let off2 = pos;
+                let data_len: usize = parts.iter().map(|(_, d)| d.len()).sum();
+                pos += data_len;
+                layouts.push(Layout {
+                    dtype: 3,
+                    flags: if *ascii { FLAG_ASCII } else { 0 },
+                    buf1_off: off1,
+                    buf1_len: (nrows + 1) * 4,
+                    buf2_off: off2,
+                    buf2_len: data_len,
+                });
+            }
+        }
+    }
+    align(&mut pos, &mut pads);
+    let total = pos;
+
+    // ---- pass 2: fill; payload regions are written in parallel ----
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    // Sound: every byte below `total` is written before `out` is returned —
+    // header+directory+names+pads here, payload regions by the tasks below.
+    #[allow(clippy::uninit_vec)]
+    unsafe {
+        out.set_len(total);
+    }
+    out[..names_off].fill(0);
+    out[0..4].copy_from_slice(MAGIC);
+    out[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    out[8..12].copy_from_slice(&(ncols as u32).to_le_bytes());
+    out[12..16].copy_from_slice(&(nrows as u32).to_le_bytes());
+    out[16..20].copy_from_slice(&(dir_off as u32).to_le_bytes());
+    let mut npos = names_off;
+    for (i, name) in names.iter().enumerate() {
+        out[npos..npos + name.len()].copy_from_slice(name.as_bytes());
+        let base = dir_off + i * COLDIR_LEN;
+        let lay = &layouts[i];
+        out[base..base + 4].copy_from_slice(&(npos as u32).to_le_bytes());
+        out[base + 4..base + 8].copy_from_slice(&(name.len() as u32).to_le_bytes());
+        out[base + 8] = lay.dtype;
+        out[base + 9] = lay.flags;
+        out[base + 20..base + 24].copy_from_slice(&(lay.buf1_off as u32).to_le_bytes());
+        out[base + 24..base + 28].copy_from_slice(&(lay.buf1_len as u32).to_le_bytes());
+        out[base + 28..base + 32].copy_from_slice(&(lay.buf2_off as u32).to_le_bytes());
+        out[base + 32..base + 36].copy_from_slice(&(lay.buf2_len as u32).to_le_bytes());
+        npos += name.len();
+    }
+    debug_assert_eq!(npos, names_end);
+    for &(start, len) in &pads {
+        out[start..start + len].fill(0);
+    }
+
+    // Disjoint payload regions, one writer task per column.
+    struct SendPtr(*mut u8);
+    unsafe impl Send for SendPtr {}
+    unsafe impl Sync for SendPtr {}
+    let base_ptr = SendPtr(out.as_mut_ptr());
+
+    use rayon::prelude::*;
+    cols.par_iter().zip(layouts.par_iter()).for_each(|(col, lay)| {
+        let bp = &base_ptr;
+        // Safety: each task writes only [buf1_off, buf1_off+buf1_len) and
+        // [buf2_off, buf2_off+buf2_len), which pass 1 made disjoint.
+        unsafe {
+            match col {
+                ColParts::Int(parts) => {
+                    write_numeric_parts(bp.0.add(lay.buf1_off), parts.iter().map(|p| *p));
+                }
+                ColParts::Float(parts) => {
+                    write_numeric_parts(bp.0.add(lay.buf1_off), parts.iter().map(|p| *p));
+                }
+                ColParts::Utf8 { parts, .. } => {
+                    let mut dst = bp.0.add(lay.buf1_off);
+                    std::ptr::copy_nonoverlapping(0u32.to_le_bytes().as_ptr(), dst, 4);
+                    dst = dst.add(4);
+                    let mut base = 0u32;
+                    for (offsets, data) in parts {
+                        let rest = &offsets[1..];
+                        #[cfg(target_endian = "little")]
+                        if base == 0 {
+                            std::ptr::copy_nonoverlapping(
+                                rest.as_ptr().cast::<u8>(),
+                                dst,
+                                rest.len() * 4,
+                            );
+                            dst = dst.add(rest.len() * 4);
+                        } else {
+                            for o in rest {
+                                let b = (o + base).to_le_bytes();
+                                std::ptr::copy_nonoverlapping(b.as_ptr(), dst, 4);
+                                dst = dst.add(4);
+                            }
+                        }
+                        #[cfg(not(target_endian = "little"))]
+                        for o in rest {
+                            let b = (o + base).to_le_bytes();
+                            std::ptr::copy_nonoverlapping(b.as_ptr(), dst, 4);
+                            dst = dst.add(4);
+                        }
+                        base += data.len() as u32;
+                    }
+                    let mut ddst = bp.0.add(lay.buf2_off);
+                    for (_, data) in parts {
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), ddst, data.len());
+                        ddst = ddst.add(data.len());
+                    }
+                }
+            }
+        }
+    });
+
+    out
+}
+
+/// Write packed numeric slices as little-endian bytes at `dst`.
+///
+/// Safety: `dst` must be valid for the summed byte length of `parts`.
+unsafe fn write_numeric_parts<'a, T: Copy + 'a>(
+    mut dst: *mut u8,
+    parts: impl Iterator<Item = &'a [T]>,
+) {
+    for p in parts {
+        #[cfg(target_endian = "little")]
+        {
+            std::ptr::copy_nonoverlapping(
+                p.as_ptr().cast::<u8>(),
+                dst,
+                std::mem::size_of_val(p),
+            );
+            dst = dst.add(std::mem::size_of_val(p));
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            // On big-endian targets the numeric types are written value by
+            // value through their little-endian byte form in the callers'
+            // serial paths; mirror that here.
+            for v in p {
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        (v as *const T).cast::<u8>(),
+                        std::mem::size_of::<T>(),
+                    )
+                };
+                let mut le: Vec<u8> = bytes.to_vec();
+                le.reverse();
+                std::ptr::copy_nonoverlapping(le.as_ptr(), dst, le.len());
+                dst = dst.add(le.len());
+            }
+        }
+    }
 }
 
 fn ru16(b: &[u8], pos: usize) -> Result<u16> {

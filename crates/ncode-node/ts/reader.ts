@@ -40,22 +40,65 @@ function validAt(bitmap: Uint8Array | undefined, row: number): boolean {
   return (bitmap[row >> 3] & (1 << (row & 7))) !== 0;
 }
 
+const MIN_SAFE_BIG = BigInt(Number.MIN_SAFE_INTEGER);
+const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Decode one UTF-8 string out of `data`. `TextDecoder.decode` carries ~100ns
+ * of per-call overhead, which dominates columnar string reads; short ASCII
+ * runs (the overwhelmingly common case) are built directly instead.
+ */
+function decodeUtf8(data: Uint8Array, start: number, end: number): string {
+  const len = end - start;
+  if (len === 0) return "";
+  if (len <= 32) {
+    let ascii = true;
+    let out = "";
+    for (let i = start; i < end; i++) {
+      const b = data[i];
+      if (b >= 0x80) {
+        ascii = false;
+        break;
+      }
+      out += String.fromCharCode(b);
+    }
+    if (ascii) return out;
+  }
+  return decoder.decode(data.subarray(start, end));
+}
+
 class ColumnImpl implements NcodeColumn {
+  /** Per-instance closure: bounds + validity + read fused into one body, so
+   * V8 inlines the raw reader instead of dispatching through a field. */
+  readonly get: (row: number) => Scalar;
+  /** Like {@link get} without the bounds check — for internal loops whose
+   * index is already proven in-range (e.g. toRows). */
+  readonly getInRange: (row: number) => Scalar;
+
   constructor(
     readonly name: string,
     readonly type: DataType,
     readonly length: number,
     private readonly validity: Uint8Array | undefined,
     private readonly readRaw: (row: number) => Scalar,
-  ) {}
+  ) {
+    const length_ = length;
+    if (validity === undefined) {
+      this.get = (row) => (row >= 0 && row < length_ ? readRaw(row) : null);
+      this.getInRange = readRaw;
+    } else {
+      const bm = validity;
+      this.get = (row) =>
+        row >= 0 && row < length_ && (bm[row >> 3] & (1 << (row & 7))) !== 0
+          ? readRaw(row)
+          : null;
+      this.getInRange = (row) =>
+        (bm[row >> 3] & (1 << (row & 7))) !== 0 ? readRaw(row) : null;
+    }
+  }
 
   isValid(row: number): boolean {
     return validAt(this.validity, row);
-  }
-
-  get(row: number): Scalar {
-    if (row < 0 || row >= this.length || !this.isValid(row)) return null;
-    return this.readRaw(row);
   }
 
   toArray(): Scalar[] {
@@ -113,12 +156,30 @@ export function decodeBatch(buf: Uint8Array): NcodeBatch {
     let readRaw: (row: number) => Scalar;
     switch (dtype) {
       case DataType.Int64: {
+        // Values in the float53-safe range come back as plain `number`,
+        // assembled from two u32 halves — no BigInt is ever allocated on the
+        // hot path. Only values with |v| ~ 2^53 or wider fall back to bigint.
         if (aligned(buf1Off)) {
-          const arr = new BigInt64Array(ab, base + buf1Off, numRows);
-          readRaw = (r) => arr[r];
+          const halves = new Uint32Array(ab, base + buf1Off, numRows * 2);
+          let wide: BigInt64Array | undefined;
+          readRaw = (r) => {
+            const lo = halves[2 * r];
+            const hi = halves[2 * r + 1] | 0; // sign-extend the top half
+            if (hi > -2097152 && hi < 2097151) return hi * 4294967296 + lo;
+            wide ??= new BigInt64Array(ab, base + buf1Off, numRows);
+            const v = wide[r];
+            return v >= MIN_SAFE_BIG && v <= MAX_SAFE_BIG ? Number(v) : v;
+          };
         } else {
           const dv = view;
-          readRaw = (r) => dv.getBigInt64(buf1Off + r * 8, true);
+          readRaw = (r) => {
+            const off = buf1Off + r * 8;
+            const lo = dv.getUint32(off, true);
+            const hi = dv.getInt32(off + 4, true);
+            if (hi > -2097152 && hi < 2097151) return hi * 4294967296 + lo;
+            const v = dv.getBigInt64(off, true);
+            return v >= MIN_SAFE_BIG && v <= MAX_SAFE_BIG ? Number(v) : v;
+          };
         }
         break;
       }
@@ -149,8 +210,45 @@ export function decodeBatch(buf: Uint8Array): NcodeBatch {
             offsets[i] = view.getUint32(buf1Off + i * 4, true);
           }
         }
-        const data = new Uint8Array(ab, base + buf2Off, buf2Len);
-        readRaw = (r) => decoder.decode(data.subarray(offsets[r], offsets[r + 1]));
+        // Node's Buffer#utf8Slice is a one-shot C++ decode (simdutf) — far
+        // cheaper per short string than TextDecoder. Fall back to the portable
+        // path outside Node.
+        const nodeBuf =
+          typeof Buffer !== "undefined" && buf2Len > 0
+            ? Buffer.from(ab, base + buf2Off, buf2Len)
+            : null;
+        // Encoder-stamped pure-ASCII hint (directory flags bit1): decode the
+        // whole char-data buffer ONCE, then every row read is an O(1)
+        // substring over it (V8 sliced string — no copy, no per-row decode).
+        if ((view.getUint8(d + 9) & 2) !== 0 && nodeBuf) {
+          // Lazy: the one-shot decode happens on first read, keeping
+          // decode-only paths (e.g. cache hits) allocation-free.
+          let whole: string | null = null;
+          readRaw = (r) =>
+            (whole ??= nodeBuf.toString("latin1")).substring(offsets[r], offsets[r + 1]);
+          break;
+        }
+        const utf8Slice =
+          nodeBuf && typeof (nodeBuf as unknown as { utf8Slice?: unknown }).utf8Slice === "function"
+            ? (nodeBuf as unknown as { utf8Slice(s: number, e: number): string }).utf8Slice.bind(nodeBuf)
+            : null;
+        // Decoded strings are memoized: the NCB buffer is immutable, so a
+        // second pass over the column (e.g. toRows() after a scan) pays no
+        // second UTF-8 decode or string allocation. The memo array itself is
+        // created on first read so decode-only paths stay allocation-free.
+        let memo: (string | undefined)[] | null = null;
+        if (utf8Slice) {
+          readRaw = (r) => {
+            const m = (memo ??= new Array(numRows));
+            return m[r] ?? (m[r] = utf8Slice(offsets[r], offsets[r + 1]));
+          };
+        } else {
+          const data = new Uint8Array(ab, base + buf2Off, buf2Len);
+          readRaw = (r) => {
+            const m = (memo ??= new Array(numRows));
+            return m[r] ?? (m[r] = decodeUtf8(data, offsets[r], offsets[r + 1]));
+          };
+        }
         break;
       }
       default:
@@ -167,11 +265,28 @@ export function decodeBatch(buf: Uint8Array): NcodeBatch {
       return columns.find((col) => col.name === name);
     },
     toRows() {
-      const rows: Record<string, Scalar>[] = [];
-      for (let r = 0; r < numRows; r++) {
-        const row: Record<string, Scalar> = {};
-        for (const col of columns) row[col.name] = col.get(r);
-        rows.push(row);
+      const rows: Record<string, Scalar>[] = new Array(numRows);
+      // A generated factory builds each row as ONE monomorphic object
+      // literal (stable hidden class, no per-property dynamic assignment).
+      try {
+        const args = columns.map((_, i) => `g${i}`);
+        const body = `return (r) => ({${columns
+          .map((c, i) => `${JSON.stringify(c.name)}: g${i}(r)`)
+          .join(", ")}});`;
+        const make = new Function(...args, body) as (
+          ...fs: unknown[]
+        ) => (r: number) => Record<string, Scalar>;
+        const rowOf = make(...columns.map((c) => (c as ColumnImpl).getInRange ?? c.get));
+        for (let r = 0; r < numRows; r++) {
+          rows[r] = rowOf(r);
+        }
+      } catch {
+        // e.g. a CSP forbidding new Function — take the dynamic path.
+        for (let r = 0; r < numRows; r++) {
+          const row: Record<string, Scalar> = {};
+          for (const col of columns) row[col.name] = col.get(r);
+          rows[r] = row;
+        }
       }
       return rows;
     },

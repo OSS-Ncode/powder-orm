@@ -1,0 +1,17 @@
+[package]
+name = "powder-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Powder ORM CLI — schema management, migration, seeding, validation, and AOT code generation"
+
+[[bin]]
+name = "powder"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

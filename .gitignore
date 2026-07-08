@@ -19,3 +19,7 @@ __pycache__/
 
 # Test
 /bench-site
+
+# Examples (compiled output)
+examples/powder-demo/*.js
+docs/

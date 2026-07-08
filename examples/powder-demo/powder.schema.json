@@ -1,0 +1,20 @@
+{
+  "database": "sqlite",
+  "tables": {
+    "users": {
+      "columns": {
+        "id": { "type": "int", "primaryKey": true },
+        "name": { "type": "text" },
+        "score": { "type": "float", "nullable": true },
+        "active": { "type": "bool" }
+      }
+    },
+    "posts": {
+      "columns": {
+        "id": { "type": "int", "primaryKey": true },
+        "user_id": { "type": "int", "references": { "table": "users", "column": "id" } },
+        "title": { "type": "text" }
+      }
+    }
+  }
+}
