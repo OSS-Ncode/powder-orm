@@ -158,6 +158,7 @@ async def run_named_query(
 
 
 class PowderTable(Generic[T]):
+    _order_cache: dict = {}
     """A typed table handle: the unified CRUD surface of Powder ORM."""
 
     def __init__(
@@ -234,11 +235,22 @@ class PowderTable(Generic[T]):
     ) -> str:
         tail = ""
         if order_by:
-            keys = [
-                f"{self._ident(col, site, qualify)} {'DESC' if str(direction).lower() == 'desc' else 'ASC'}"
-                for col, direction in order_by.items()
-            ]
-            tail += f" ORDER BY {', '.join(keys)}"
+            # Memoized by (columns, directions, qualifier) — repeat queries
+            # skip the string assembly, same policy as the where-shape cache.
+            cache_key = (qualify or "") + ",".join(
+                f"{c}:{d}" for c, d in order_by.items()
+            )
+            frag = self._order_cache.get(cache_key)
+            if frag is None:
+                keys = [
+                    f"{self._ident(col, site, qualify)} {'DESC' if str(direction).lower() == 'desc' else 'ASC'}"
+                    for col, direction in order_by.items()
+                ]
+                frag = f" ORDER BY {', '.join(keys)}"
+                if len(self._order_cache) >= 256:
+                    self._order_cache.clear()
+                self._order_cache[cache_key] = frag
+            tail += frag
         if limit is not None:
             tail += f" LIMIT {int(limit)}"
         if offset is not None:
@@ -507,23 +519,41 @@ class PowderTable(Generic[T]):
         return await self._execute(sql, [values[k] for k in keys], site)
 
     async def create_many(self, rows: Sequence[Any], chunk_size: int = 500) -> int:
-        """Bulk INSERT with multi-row VALUES, chunked to keep parameter counts sane."""
+        """Bulk INSERT with multi-row VALUES, chunked to keep parameter counts sane.
+
+        Safeguards: the chunk size is clamped under SQLite's bound-variable
+        ceiling (32766) regardless of the caller's ``chunk_size``, and every
+        row must carry the same columns as the first — mismatched shapes fail
+        loudly instead of silently inserting NULLs.
+        """
         if not rows:
             return 0
         site = _call_site()
         dicts = [self._data_dict(r) for r in rows]
         keys = list(dicts[0].keys())
+        if not keys:
+            raise PowderError("create_many() rows have no insertable columns", self.meta.table, site)
         idents = [self._ident(k, site) for k in keys]
+        max_rows = max(1, 32000 // len(keys))
+        effective = max(1, min(int(chunk_size), max_rows))
+        key_set = set(keys)
         row_ph = f"({', '.join('?' * len(keys))})"
         affected = 0
-        for start in range(0, len(dicts), chunk_size):
-            chunk = dicts[start : start + chunk_size]
+        for start in range(0, len(dicts), effective):
+            chunk = dicts[start : start + effective]
             sql = (
                 f"INSERT INTO {self.meta.table} ({', '.join(idents)}) "
                 f"VALUES {', '.join([row_ph] * len(chunk))}"
             )
             params: list[Any] = []
-            for row in chunk:
+            for i, row in enumerate(chunk):
+                if set(row.keys()) != key_set:
+                    raise PowderError(
+                        f"create_many() row {start + i} has columns [{', '.join(row.keys())}] "
+                        f"but row 0 has [{', '.join(keys)}]; all rows must share one shape",
+                        self.meta.table,
+                        site,
+                    )
                 params.extend(row[k] for k in keys)
             affected += await self._execute(sql, params, site)
         return affected
@@ -565,6 +595,25 @@ class PowderTable(Generic[T]):
         value = col.get(0) if col else 0
         return int(value or 0)
 
+    async def exists(self, where: Optional[Mapping[str, Any]] = None) -> bool:
+        """Whether at least one row matches (``LIMIT 1`` under the hood)."""
+        return await self.find_first(where=where) is not None
+
+    async def aggregate(
+        self, fn: str, column: str, where: Optional[Mapping[str, Any]] = None
+    ) -> Optional[float]:
+        """SUM / AVG / MIN / MAX over one column; ``None`` when no rows match."""
+        site = _call_site()
+        if fn not in ("sum", "avg", "min", "max"):
+            raise PowderError(f"unknown aggregate `{fn}`", self.meta.table, site)
+        ident = self._ident(column, site)
+        clause, params = self._compile_where(where, site)
+        sql = f"SELECT {fn.upper()}({ident}) AS v FROM {self.meta.table}{clause}"
+        batch = await self._query(sql, params, site)
+        col = batch.column("v")
+        value = col.get(0) if col else None
+        return None if value is None else value
+
     # -- beginner-friendly surface ---------------------------------------
 
     async def find(self, key: Any) -> Optional[T]:
@@ -589,12 +638,16 @@ class PowderTable(Generic[T]):
         """Every row (chain from :meth:`where` for filters)."""
         return await self.find_many()
 
-    def where(self, **conditions: Any) -> "Finder[T]":
-        """Start a chainable query::
+    def where(self, *triple: Any, **conditions: Any) -> "Finder[T]":
+        """Start a chainable query. Two spellings, same engine::
 
-            top = await db.users.where(active=True).order_by("score", "desc").limit(10).all()
+            db.users.where(active=True, score={"gte": 5})   # keyword form
+            db.users.where("score", ">=", 5)                # beginner 3-arg form
         """
-        return Finder(self, where=dict(conditions))
+        merged = dict(conditions)
+        if triple:
+            merged.update(_where_from_triple(self.meta.table, *triple))
+        return Finder(self, where=merged)
 
     def order_by(self, column: str, direction: str = "asc") -> "Finder[T]":
         """Start a chainable query from an ordering."""
@@ -637,9 +690,13 @@ class Finder(Generic[T]):
         state.update(patch)
         return Finder(self._table, **state)
 
-    def where(self, **conditions: Any) -> "Finder[T]":
-        """Add filters; repeated calls merge (same column overrides)."""
-        return self._extend(where={**self._where, **conditions})
+    def where(self, *triple: Any, **conditions: Any) -> "Finder[T]":
+        """Add filters; repeated calls merge (same column overrides).
+        Accepts the keyword form and the 3-arg form: ``where("score", ">=", 5)``."""
+        merged = dict(conditions)
+        if triple:
+            merged.update(_where_from_triple(self._table.meta.table, *triple))
+        return self._extend(where={**self._where, **merged})
 
     def order_by(self, column: str, direction: str = "asc") -> "Finder[T]":
         return self._extend(order_by={**self._order_by, column: direction})
@@ -677,3 +734,107 @@ class Finder(Generic[T]):
     async def count(self) -> int:
         """Count matching rows (ignores limit/offset/ordering)."""
         return await self._table.count(self._where or None)
+
+    async def exists(self) -> bool:
+        """Whether at least one row matches."""
+        return await self._table.exists(self._where or None)
+
+    async def pluck(self, column: str) -> list:
+        """One column's values, in query order."""
+        rows = await self.all()
+        return [getattr(r, column) if not isinstance(r, Mapping) else r[column] for r in rows]
+
+    async def sum(self, column: str) -> Optional[float]:
+        return await self._table.aggregate("sum", column, self._where or None)
+
+    async def avg(self, column: str) -> Optional[float]:
+        return await self._table.aggregate("avg", column, self._where or None)
+
+    async def min(self, column: str) -> Optional[float]:
+        return await self._table.aggregate("min", column, self._where or None)
+
+    async def max(self, column: str) -> Optional[float]:
+        return await self._table.aggregate("max", column, self._where or None)
+
+    async def paginate(self, page: int, per_page: int = 20) -> "Page[T]":
+        """Page through results (1-based). Returns rows + total (unpaged) count."""
+        p = max(1, int(page))
+        per = max(1, int(per_page))
+        rows = await self._extend(limit=per, offset=(p - 1) * per).all()
+        total = await self.count()
+        return Page(
+            rows=rows,
+            total=total,
+            page=p,
+            per_page=per,
+            total_pages=max(1, -(-total // per)),
+        )
+
+
+@dataclass
+class Page(Generic[T]):
+    """One page of results from :meth:`Finder.paginate`."""
+
+    rows: list[T]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+_OP_KEY = {
+    "=": "eq",
+    "!=": "ne",
+    ">": "gt",
+    ">=": "gte",
+    "<": "lt",
+    "<=": "lte",
+    "like": "like",
+    "in": "in",
+}
+
+
+def _where_from_triple(table: str, *triple: Any) -> dict:
+    """Turn ``("score", ">=", 5)`` into ``{"score": {"gte": 5}}``."""
+    if len(triple) != 3:
+        raise PowderError(
+            "positional where() takes exactly (column, op, value)", table, _call_site()
+        )
+    column, op, value = triple
+    key = _OP_KEY.get(op)
+    if key is None:
+        raise PowderError(
+            f"unknown operator `{op}` (expected {' '.join(_OP_KEY)})", table, _call_site()
+        )
+    return {column: {key: value}}
+
+
+def extend_powder(db: Any, extensions: Mapping[str, Mapping[str, Any]]) -> Any:
+    """Graft user-defined methods onto a Powder client's tables without
+    mutating the original — the Python twin of TS ``db.$extend``::
+
+        xdb = extend_powder(db, {"users": {
+            "top": async def... (self, n): return await self.order_by("score", "desc").limit(n).all()
+        }})
+        await xdb.users.top(3)
+
+    Inside a method, ``self`` is the (extended) table, so custom helpers
+    compose the built-in API. Unknown table names fail loudly.
+    """
+    import copy as _copy
+    from types import MethodType
+
+    out = _copy.copy(db)
+    for table_name, methods in extensions.items():
+        table = getattr(db, table_name, None)
+        if not isinstance(table, PowderTable):
+            raise PowderError(
+                f"extend_powder: `{table_name}` is not a table on this client",
+                table_name,
+                _call_site(),
+            )
+        augmented = _copy.copy(table)
+        for name, fn in methods.items():
+            setattr(augmented, name, MethodType(fn, augmented))
+        setattr(out, table_name, augmented)
+    return out

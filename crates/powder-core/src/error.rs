@@ -41,3 +41,43 @@ impl From<rusqlite::Error> for Error {
         Error::Database(value.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_formats_every_variant() {
+        assert_eq!(
+            Error::Database("boom".into()).to_string(),
+            "database error: boom"
+        );
+        assert_eq!(
+            Error::InvalidUrl("nope://x".into()).to_string(),
+            "invalid connection url: nope://x"
+        );
+        assert_eq!(Error::Codec("short".into()).to_string(), "codec error: short");
+        assert_eq!(
+            Error::Type {
+                column: "score".into(),
+                message: "not a float".into()
+            }
+            .to_string(),
+            "type error in column `score`: not a float"
+        );
+        assert_eq!(
+            Error::Unsupported("blob".into()).to_string(),
+            "unsupported data type: blob"
+        );
+        assert_eq!(
+            Error::Join("panicked".into()).to_string(),
+            "background task failed: panicked"
+        );
+    }
+
+    #[test]
+    fn rusqlite_errors_convert_to_database() {
+        let e: Error = rusqlite::Error::InvalidQuery.into();
+        assert!(matches!(e, Error::Database(_)));
+    }
+}

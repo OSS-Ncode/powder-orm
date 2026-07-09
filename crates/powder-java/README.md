@@ -1,30 +1,25 @@
-# @powder/java — JNI bindings
+# @powder/java — JNI 바인딩
 
-Java client for the Powder engine. The native layer (Rust, `jni` crate) owns
-the async connection and returns query results as the raw PCB byte buffer; the
-pure-Java `PcbReader` turns it into typed columns. Mirrors the Node (napi) and
-Python (PyO3) bindings.
+Powder 엔진의 Java 클라이언트. 네이티브 레이어(Rust, `jni` 크레이트)가 async 연결을 소유하고 쿼리 결과를 원시 PCB 바이트 버퍼로 반환하며, 순수 Java `PcbReader`가 이를 타입 있는 컬럼으로 변환한다. Node(napi)·Python(PyO3) 바인딩과 같은 구조다.
 
-## Build
+## 빌드
 
 ```bash
-# 1. Native cdylib  ->  <target>/release/powder_java.{dll,so,dylib}
+# 1. 네이티브 cdylib  ->  <target>/release/powder_java.{dll,so,dylib}
 cargo build -p powder-java --release
 
-# 2. Java classes
+# 2. Java 클래스
 cd crates/powder-java
 javac -d out java/com/powder/*.java java/PowderTest.java
 
-# 3. Run the e2e test (pass the native library path)
+# 3. e2e 테스트 실행 (네이티브 라이브러리 경로를 인자로 전달)
 java -cp out PowderTest <target>/release/powder_java.dll
 #   -> java jni OK (17 checks)
 ```
 
-On Linux/macOS the library is `libpowder_java.so` / `libpowder_java.dylib`; put
-it on `java.library.path` and use `Powder.loadLibraryByName("powder_java")`
-instead of an absolute path.
+Linux/macOS에서는 라이브러리가 `libpowder_java.so` / `libpowder_java.dylib`다. `java.library.path`에 올려두고 절대 경로 대신 `Powder.loadLibraryByName("powder_java")`를 쓰면 된다.
 
-## Usage
+## 사용법
 
 ```java
 import com.powder.*;
@@ -40,35 +35,30 @@ try (Client db = Powder.connect("sqlite::memory:")) {
         System.out.println(name.getString(r));
     }
 
-    // Transactions (nested calls use savepoints).
+    // 트랜잭션 (중첩 호출은 savepoint 사용).
     db.transaction(tx -> {
         tx.execute("INSERT INTO users VALUES (2, 'bob', 7.0)");
     });
 }
 ```
 
-## Notes
+## 참고
 
-- Bound parameters accept `Long`/`Integer`, `Double`/`Float`, `String`,
-  `Boolean`, and `null`. They cross the JNI boundary as a JSON array string, so
-  the native surface stays narrow with no object-array reflection.
+- 바인딩 파라미터는 `Long`/`Integer`, `Double`/`Float`, `String`, `Boolean`, `null`을 받는다. JNI 경계를 JSON 배열 문자열로 넘어가므로, 객체 배열 리플렉션 없이 네이티브 표면이 좁게 유지된다.
 
-### Copying vs. zero-copy
+### 복사 vs. zero-copy
 
-| Method | Backing | Boundary copy | Close required |
+| 메서드 | 저장소 | 경계 복사 | close 필요 |
 |---|---|---|---|
-| `query(...)` | JVM `byte[]` | one copy | no (close is a no-op) |
-| `queryDirect(...)` | direct `ByteBuffer` over native memory | **none** | **yes** |
+| `query(...)` | JVM `byte[]` | 1회 복사 | 아니오 (close는 no-op) |
+| `queryDirect(...)` | 네이티브 메모리 위의 direct `ByteBuffer` | **없음** | **예** |
 
-`queryDirect` hands the JVM a `DirectByteBuffer` aliasing the Rust allocation,
-so large result sets never pay the boundary copy. The batch owns that memory —
-use try-with-resources and don't read columns after close:
+`queryDirect`는 Rust 할당을 앨리어스하는 `DirectByteBuffer`를 JVM에 넘기므로, 큰 결과 집합도 경계 복사 비용을 내지 않는다. 그 메모리는 배치가 소유한다 — try-with-resources를 쓰고, close 이후에는 컬럼을 읽지 말 것:
 
 ```java
 try (Batch b = db.queryDirect("SELECT * FROM users")) {
-    // read columns here
+    // 여기서 컬럼을 읽는다
 }
 ```
 
-Both paths decode through the same `PcbReader` and produce identical rows;
-numeric access is read straight from the little-endian buffer either way.
+두 경로 모두 같은 `PcbReader`로 디코드하며 동일한 행을 만든다; 숫자 접근은 어느 쪽이든 리틀 엔디언 버퍼에서 바로 읽는다.

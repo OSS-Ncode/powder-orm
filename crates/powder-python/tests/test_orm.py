@@ -15,6 +15,7 @@ from powder.orm import (
     PowderTable,
     RelationMeta,
     TableMeta,
+    extend_powder,
     run_named_query,
 )
 
@@ -503,6 +504,115 @@ def test_beginner_api():
 
 def test_named_query():
     asyncio.run(_named_query())
+
+
+async def _beginner_v2():
+    users = await _setup()
+    await users.create_many(
+        [
+            {"id": 1, "name": "alice", "score": 9.5, "active": True},
+            {"id": 2, "name": "bob", "score": 4.0, "active": False},
+            {"id": 3, "name": "carol", "score": 7.0, "active": True},
+            {"id": 4, "name": "dave", "score": None, "active": True},
+        ]
+    )
+
+    # 3-arg where on the table and the finder; merges with keyword form.
+    assert await users.where("score", ">=", 5).order_by("id").pluck("name") == ["alice", "carol"]
+    assert await users.where("name", "like", "a%").count() == 1
+    assert await users.where(active=True).where("score", ">", 8).count() == 1
+    assert await users.where("id", "in", [1, 3]).count() == 2
+
+    # exists
+    assert await users.where("score", ">", 100).exists() is False
+    assert await users.exists({"active": True}) is True
+
+    # aggregates (NULL ignored by SQL semantics)
+    assert await users.where(active=True).sum("score") == 16.5
+    assert await users.where(active=True).avg("score") == 8.25
+    assert await users.where().min("score") == 4.0
+    assert await users.where().max("score") == 9.5
+    assert await users.where("id", ">", 99).sum("score") is None
+
+    # unknown operator fails loudly
+    try:
+        users.where("score", "=~", 1)
+        raise AssertionError("expected PowderError")
+    except PowderError:
+        pass
+
+    # paginate
+    page1 = await users.order_by("id").paginate(1, 3)
+    assert [r.id for r in page1.rows] == [1, 2, 3] and page1.total == 4 and page1.total_pages == 2
+    page2 = await users.order_by("id").paginate(2, 3)
+    assert [r.id for r in page2.rows] == [4]
+
+
+async def _create_many_guards():
+    users = await _setup()
+    # Chunk clamp: a huge chunk_size stays under the variable ceiling.
+    many = [
+        {"id": i, "name": f"u{i}", "score": i / 10, "active": i % 2 == 0}
+        for i in range(1, 12_001)
+    ]
+    assert await users.create_many(many, chunk_size=1_000_000) == 12_000
+    assert await users.count() == 12_000
+
+    # Heterogeneous rows fail loudly.
+    try:
+        await users.create_many(
+            [
+                {"id": 20_001, "name": "full", "score": 1.0, "active": True},
+                {"id": 20_002, "name": "missing-active", "score": 1.0},
+            ]
+        )
+        raise AssertionError("expected PowderError")
+    except PowderError as e:
+        assert "row 1 has columns" in str(e), e
+
+
+async def _extend():
+    users = await _setup()
+
+    class Db:
+        pass
+
+    db = Db()
+    db.users = users
+
+    async def top(self, n):
+        return await self.order_by("score", "desc").limit(n).all()
+
+    async def create_many_active(self, names):
+        return await self.create_many(
+            [{"id": 100 + i, "name": n, "score": 0.0, "active": True} for i, n in enumerate(names)]
+        )
+
+    xdb = extend_powder(db, {"users": {"top": top, "create_many_active": create_many_active}})
+    await xdb.users.create_many_active(["a", "b", "c"])
+    assert await xdb.users.count() == 3
+    await xdb.users.update(where={"name": "a"}, data={"score": 9.0})
+    assert (await xdb.users.top(1))[0].name == "a"
+
+    # Original client untouched; unknown table fails loudly.
+    assert not hasattr(db.users, "top")
+    try:
+        extend_powder(db, {"nope": {"x": top}})
+        raise AssertionError("expected PowderError")
+    except PowderError:
+        pass
+
+
+def test_beginner_v2():
+    asyncio.run(_beginner_v2())
+
+
+def test_create_many_guards():
+    asyncio.run(_create_many_guards())
+
+
+def test_extend():
+    asyncio.run(_extend())
 
 
 if __name__ == "__main__":

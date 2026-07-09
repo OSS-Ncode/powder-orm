@@ -47,6 +47,10 @@ final class PcbReader {
         int numRows = buf.getInt(12);
         int dirOff = buf.getInt(16);
 
+        // Direct batches share a liveness token with their columns so a read
+        // after close() throws instead of touching freed native memory.
+        Lifetime lifetime = nativeAddress != 0 ? new Lifetime() : null;
+
         List<Column> columns = new ArrayList<>(numColumns);
         for (int c = 0; c < numColumns; c++) {
             int d = dirOff + c * COLDIR_LEN;
@@ -81,8 +85,9 @@ final class PcbReader {
                             hasValidity ? validityOff : -1,
                             buf1Off,
                             buf2Off,
-                            utf8Offsets));
+                            utf8Offsets,
+                            lifetime));
         }
-        return new Batch(numRows, columns, nativeAddress, nativeLength);
+        return new Batch(numRows, columns, nativeAddress, nativeLength, lifetime);
     }
 }

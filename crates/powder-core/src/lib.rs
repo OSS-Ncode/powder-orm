@@ -33,6 +33,10 @@ pub mod batch;
 pub mod client;
 pub mod codec;
 pub mod error;
+#[cfg(feature = "mysql")]
+pub mod my;
+#[cfg(feature = "postgres")]
+pub mod pg;
 pub mod query;
 pub mod schema;
 

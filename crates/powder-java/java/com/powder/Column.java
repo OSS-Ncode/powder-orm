@@ -21,6 +21,7 @@ public final class Column {
     private final int buf1Off;
     private final int buf2Off;
     private final int[] utf8Offsets; // only for UTF8 columns
+    private final Lifetime lifetime; // null for JVM-owned (copied) batches
 
     Column(
             String name,
@@ -30,7 +31,8 @@ public final class Column {
             int validityOff,
             int buf1Off,
             int buf2Off,
-            int[] utf8Offsets) {
+            int[] utf8Offsets,
+            Lifetime lifetime) {
         this.name = name;
         this.type = type;
         this.length = length;
@@ -39,6 +41,14 @@ public final class Column {
         this.buf1Off = buf1Off;
         this.buf2Off = buf2Off;
         this.utf8Offsets = utf8Offsets;
+        this.lifetime = lifetime;
+    }
+
+    /** Reject reads on a direct batch whose native memory was released. */
+    private void checkAlive() {
+        if (lifetime != null) {
+            lifetime.check();
+        }
     }
 
     public String name() {
@@ -55,6 +65,7 @@ public final class Column {
 
     /** Whether the slot at {@code row} holds a value (vs. SQL NULL). */
     public boolean isValid(int row) {
+        checkAlive();
         if (validityOff < 0) {
             return true;
         }
@@ -63,19 +74,23 @@ public final class Column {
     }
 
     public long getLong(int row) {
+        checkAlive();
         return buf.getLong(buf1Off + row * 8);
     }
 
     public double getDouble(int row) {
+        checkAlive();
         return buf.getDouble(buf1Off + row * 8);
     }
 
     public boolean getBoolean(int row) {
+        checkAlive();
         int b = buf.get(buf1Off + (row >> 3)) & 0xFF;
         return (b & (1 << (row & 7))) != 0;
     }
 
     public String getString(int row) {
+        checkAlive();
         int start = utf8Offsets[row];
         int end = utf8Offsets[row + 1];
         int n = end - start;

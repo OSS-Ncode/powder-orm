@@ -19,12 +19,14 @@ public final class Batch implements AutoCloseable {
     private final Map<String, Column> byName;
     private long nativeAddress; // 0 when JVM-owned
     private final long nativeLength;
+    private final Lifetime lifetime; // null when JVM-owned
 
-    Batch(int numRows, List<Column> columns, long nativeAddress, long nativeLength) {
+    Batch(int numRows, List<Column> columns, long nativeAddress, long nativeLength, Lifetime lifetime) {
         this.numRows = numRows;
         this.columns = columns;
         this.nativeAddress = nativeAddress;
         this.nativeLength = nativeLength;
+        this.lifetime = lifetime;
         this.byName = new LinkedHashMap<>();
         for (Column c : columns) {
             byName.put(c.name(), c);
@@ -68,6 +70,11 @@ public final class Batch implements AutoCloseable {
     @Override
     public void close() {
         if (nativeAddress != 0) {
+            // Flip the shared token first so no column read can race past it
+            // into the free below.
+            if (lifetime != null) {
+                lifetime.closed = true;
+            }
             PowderNative.freeBuffer(nativeAddress, nativeLength);
             nativeAddress = 0;
         }

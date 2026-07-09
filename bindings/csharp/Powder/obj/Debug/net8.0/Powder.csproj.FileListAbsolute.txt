@@ -1,0 +1,12 @@
+Q:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net8.0\Powder.deps.json
+Q:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net8.0\Powder.dll
+Q:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net8.0\Powder.pdb
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.GeneratedMSBuildEditorConfig.editorconfig
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.AssemblyInfoInputs.cache
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.AssemblyInfo.cs
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.csproj.CoreCompileInputs.cache
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.sourcelink.json
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.dll
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\refint\Powder.dll
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\Powder.pdb
+Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net8.0\ref\Powder.dll

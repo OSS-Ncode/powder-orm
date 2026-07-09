@@ -12,7 +12,7 @@ name = "powder_java"
 crate-type = ["cdylib"]
 
 [dependencies]
-powder-core.workspace = true
+powder-core = { workspace = true, features = ["postgres", "mysql"] }
 jni = "0.21"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }

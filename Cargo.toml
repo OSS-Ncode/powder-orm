@@ -7,6 +7,7 @@ members = [
     "crates/powder-java",
     "crates/powder-ffi",
     "crates/powder-cli",
+    "bench-site/bench/rust-bench",
 ]
 
 # The language-binding crates build C dynamic libraries and need their own

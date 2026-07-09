@@ -15,3 +15,7 @@ path = "src/main.rs"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Live PostgreSQL migrations/validation (`powder migrate --db postgres://...`).
+postgres = "0.19"
+# Live MySQL/MariaDB migrations/validation (`powder migrate --db mysql://...`).
+mysql = { version = "25", default-features = false, features = ["minimal"] }

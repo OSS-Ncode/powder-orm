@@ -84,7 +84,7 @@ export type Where<T> = {
  */
 export type IncludeMap = Record<string, boolean | { include?: IncludeMap }>;
 
-export interface FindOptions<T> {
+export interface FindOptions<T, Inc extends IncludeMap = IncludeMap> {
   where?: Where<T>;
   orderBy?: { [K in keyof T]?: "asc" | "desc" };
   limit?: number;
@@ -94,13 +94,13 @@ export interface FindOptions<T> {
    * both `belongsTo` and `hasMany` relations, composite keys, and nesting
    * (see {@link IncludeMap}).
    */
-  include?: IncludeMap;
+  include?: Inc;
   /**
    * `belongsTo` relations to hydrate in a *single* `LEFT JOIN` query instead
    * of a second round-trip. Only valid for `belongsTo`; `hasMany` would
    * multiply parent rows, so use `include` for those.
    */
-  join?: Record<string, boolean>;
+  join?: { [K in keyof Inc]?: boolean };
 }
 
 /** A database error mapped back to the caller's source location. */
@@ -224,7 +224,7 @@ function materialize(batch: PowderBatch, meta: TableMeta): Record<string, unknow
  * await users.create({ id: 1, name: "alice", score: 9.5 });
  * const top = await users.findMany({ where: { score: { gte: 5 } }, orderBy: { id: "asc" } });
  */
-export class PowderTable<T extends object> {
+export class PowderTable<T extends object, Inc extends IncludeMap = IncludeMap> {
   /**
    * Compiled WHERE fragments, keyed by the *shape* of the predicate (columns,
    * operators, and `IN` arity — never the bound values). Two calls with the
@@ -344,19 +344,30 @@ export class PowderTable<T extends object> {
     return { clause, params: this.collectWhereParams(where) };
   }
 
-  private compileTail(opts: FindOptions<T>, qualify?: string): string {
+  /** ORDER BY fragments memoized by (columns, directions, qualifier) — the
+   * string assembly disappears on repeat queries, same as the where cache. */
+  private readonly orderCache = new Map<string, string>();
+
+  private compileTail(opts: FindOptions<T, Inc>, qualify?: string): string {
     let tail = "";
     const q = qualify ? `${qualify}.` : "";
     if (opts.orderBy) {
       const keys = Object.entries(opts.orderBy).filter(([, d]) => d !== undefined);
       if (keys.length) {
-        tail += ` ORDER BY ${keys
-          .map(([col, dir]) => {
-            const bare = this.meta.sql.ident[col];
-            if (!bare) throw new PowderError(`unknown column \`${col}\``, this.meta.table, callSite());
-            return `${q}${bare} ${dir === "desc" ? "DESC" : "ASC"}`;
-          })
-          .join(", ")}`;
+        const cacheKey = q + keys.map(([c, d]) => `${c}:${d}`).join(",");
+        let frag = this.orderCache.get(cacheKey);
+        if (frag === undefined) {
+          frag = ` ORDER BY ${keys
+            .map(([col, dir]) => {
+              const bare = this.meta.sql.ident[col];
+              if (!bare) throw new PowderError(`unknown column \`${col}\``, this.meta.table, callSite());
+              return `${q}${bare} ${dir === "desc" ? "DESC" : "ASC"}`;
+            })
+            .join(", ")}`;
+          if (this.orderCache.size >= PowderTable.WHERE_CACHE_MAX) this.orderCache.clear();
+          this.orderCache.set(cacheKey, frag);
+        }
+        tail += frag;
       }
     }
     if (opts.limit !== undefined) tail += ` LIMIT ${Math.floor(opts.limit)}`;
@@ -463,7 +474,7 @@ export class PowderTable<T extends object> {
    * hydrate the nested object from aliased columns. One round-trip instead of
    * the two `include` uses.
    */
-  private async findManyJoined(opts: FindOptions<T>, site: string | undefined): Promise<T[]> {
+  private async findManyJoined(opts: FindOptions<T, Inc>, site: string | undefined): Promise<T[]> {
     const table = this.meta.table;
     const rels = Object.entries(opts.join ?? {})
       .filter(([, w]) => w)
@@ -550,7 +561,7 @@ export class PowderTable<T extends object> {
   }
 
   /** SELECT rows matching `opts`, materialized as typed objects. */
-  async findMany(opts: FindOptions<T> = {}): Promise<T[]> {
+  async findMany(opts: FindOptions<T, Inc> = {}): Promise<T[]> {
     const site = callSite();
     let rows: T[];
     if (opts.join) {
@@ -568,7 +579,7 @@ export class PowderTable<T extends object> {
   }
 
   /** First row matching `opts`, or `null`. */
-  async findFirst(opts: FindOptions<T> = {}): Promise<T | null> {
+  async findFirst(opts: FindOptions<T, Inc> = {}): Promise<T | null> {
     const rows = await this.findMany({ ...opts, limit: 1 });
     return rows[0] ?? null;
   }
@@ -603,14 +614,24 @@ export class PowderTable<T extends object> {
     return this.findMany();
   }
 
-  /** Start a chainable query: `db.users.where({ active: true }).orderBy("score", "desc").limit(10).all()`. */
-  where(w: Where<T>): Finder<T> {
+  /**
+   * Start a chainable query. Two spellings, same engine:
+   *
+   * ```ts
+   * db.users.where({ active: true, score: { gte: 5 } })  // object form
+   * db.users.where("score", ">=", 5)                     // beginner 3-arg form
+   * ```
+   */
+  where(w: Where<T>): Finder<T, Inc>;
+  where(column: keyof T & string, op: WhereOpName, value: unknown): Finder<T, Inc>;
+  where(a: Where<T> | (keyof T & string), op?: WhereOpName, value?: unknown): Finder<T, Inc> {
+    const w = typeof a === "string" ? whereFromTriple<T>(a, op as WhereOpName, value) : a;
     return new Finder(this, { where: w });
   }
 
   /** Start a chainable query from an ordering. */
-  orderBy(column: keyof T & string, dir: "asc" | "desc" = "asc"): Finder<T> {
-    return new Finder(this, { orderBy: { [column]: dir } as FindOptions<T>["orderBy"] });
+  orderBy(column: keyof T & string, dir: "asc" | "desc" = "asc"): Finder<T, Inc> {
+    return new Finder(this, { orderBy: { [column]: dir } as FindOptions<T, Inc>["orderBy"] });
   }
 
   /** Keys of `data` that are real columns: skips `undefined` and relation
@@ -642,24 +663,50 @@ export class PowderTable<T extends object> {
     return this.runExecute(sql, keys.map((k) => toParam((data as Record<string, unknown>)[k])), site);
   }
 
-  /** Bulk INSERT with multi-row VALUES, chunked to keep parameter counts sane. */
+  /**
+   * Bulk INSERT with multi-row VALUES, chunked to keep parameter counts sane.
+   *
+   * Safeguards: the chunk size is clamped so a chunk never exceeds SQLite's
+   * bound-variable ceiling (32766) regardless of the caller's `chunkSize`,
+   * and every row must carry the same columns as the first — a row with
+   * missing/extra keys fails loudly instead of silently inserting NULLs.
+   */
   async createMany(rows: readonly Partial<T>[], chunkSize = 500): Promise<number> {
     if (rows.length === 0) return 0;
     const site = callSite();
     const keys = this.columnKeys(rows[0]);
+    if (keys.length === 0) {
+      throw new PowderError("createMany() rows have no insertable columns", this.meta.table, site);
+    }
     const idents = keys.map((k) => {
       const ident = this.meta.sql.ident[k];
       if (!ident) throw new PowderError(`unknown column \`${k}\``, this.meta.table, site);
       return ident;
     });
+    // SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 32766; stay safely under
+    // it no matter what chunk size the caller asked for.
+    const MAX_VARS = 32000;
+    const maxRowsPerChunk = Math.max(1, Math.floor(MAX_VARS / keys.length));
+    const effectiveChunk = Math.max(1, Math.min(Math.floor(chunkSize), maxRowsPerChunk));
+
+    const keySet = new Set<string>(keys);
     const rowPh = `(${keys.map(() => "?").join(", ")})`;
     let affected = 0;
-    for (let start = 0; start < rows.length; start += chunkSize) {
-      const chunk = rows.slice(start, start + chunkSize);
+    for (let start = 0; start < rows.length; start += effectiveChunk) {
+      const chunk = rows.slice(start, start + effectiveChunk);
       const sql = `INSERT INTO ${this.meta.table} (${idents.join(", ")}) VALUES ${new Array(chunk.length).fill(rowPh).join(", ")}`;
       const params: Param[] = [];
-      for (const row of chunk) {
-        for (const k of keys) params.push(toParam((row as Record<string, unknown>)[k]));
+      for (let i = 0; i < chunk.length; i++) {
+        const row = chunk[i] as Record<string, unknown>;
+        const rowKeys = this.columnKeys(chunk[i]);
+        if (rowKeys.length !== keys.length || rowKeys.some((k) => !keySet.has(k))) {
+          throw new PowderError(
+            `createMany() row ${start + i} has columns [${rowKeys.join(", ")}] but row 0 has [${keys.join(", ")}]; all rows must share one shape`,
+            this.meta.table,
+            site,
+          );
+        }
+        for (const k of keys) params.push(toParam(row[k]));
       }
       affected += await this.runExecute(sql, params, site);
     }
@@ -711,6 +758,55 @@ export class PowderTable<T extends object> {
     const v = batch.column("n")?.get(0) ?? 0;
     return typeof v === "bigint" ? Number(v) : (v as number);
   }
+
+  /** Whether at least one row matches (`LIMIT 1` under the hood). */
+  async exists(where?: Where<T>): Promise<boolean> {
+    return (await this.findFirst({ where } as FindOptions<T, Inc>)) !== null;
+  }
+
+  /** SUM / AVG / MIN / MAX over one column; `null` when no rows match. */
+  async aggregate(
+    fn: "sum" | "avg" | "min" | "max",
+    column: keyof T & string,
+    where?: Where<T>,
+  ): Promise<number | null> {
+    const site = callSite();
+    const ident = this.meta.sql.ident[column];
+    if (!ident) throw new PowderError(`unknown column \`${column}\``, this.meta.table, site);
+    const { clause, params } = this.compileWhere(where);
+    const sql = `SELECT ${fn.toUpperCase()}(${ident}) AS v FROM ${this.meta.table}${clause}`;
+    const batch = await this.runQuery(sql, params, site);
+    const v = batch.column("v")?.get(0);
+    if (v === null || v === undefined) return null;
+    return typeof v === "bigint" ? Number(v) : (v as number);
+  }
+}
+
+/** Comparison spellings accepted by the 3-argument `where` overload. */
+export type WhereOpName = "=" | "!=" | ">" | ">=" | "<" | "<=" | "like" | "in";
+
+const OP_KEY: Record<WhereOpName, keyof WhereOps<unknown>> = {
+  "=": "eq",
+  "!=": "ne",
+  ">": "gt",
+  ">=": "gte",
+  "<": "lt",
+  "<=": "lte",
+  like: "like",
+  in: "in",
+};
+
+/** Turn `("score", ">=", 5)` into `{ score: { gte: 5 } }`. */
+export function whereFromTriple<T>(column: keyof T & string, op: WhereOpName, value: unknown): Where<T> {
+  const key = OP_KEY[op];
+  if (!key) {
+    throw new PowderError(
+      `unknown operator \`${op}\` (expected ${Object.keys(OP_KEY).join(" ")})`,
+      String(column),
+      callSite(),
+    );
+  }
+  return { [column]: { [key]: value } } as Where<T>;
 }
 
 /**
@@ -759,43 +855,47 @@ export async function runNamedQuery(
  * Each step returns a new Finder, so partial queries can be shared and
  * extended without affecting each other.
  */
-export class Finder<T extends object> {
+export class Finder<T extends object, Inc extends IncludeMap = IncludeMap> {
   constructor(
-    private readonly table: PowderTable<T>,
-    private readonly opts: FindOptions<T>,
+    private readonly table: PowderTable<T, Inc>,
+    private readonly opts: FindOptions<T, Inc>,
   ) {}
 
-  private extend(patch: Partial<FindOptions<T>>): Finder<T> {
+  private extend(patch: Partial<FindOptions<T, Inc>>): Finder<T, Inc> {
     return new Finder(this.table, { ...this.opts, ...patch });
   }
 
-  /** Add filters; multiple where() calls are merged (same column overrides). */
-  where(w: Where<T>): Finder<T> {
+  /** Add filters; multiple where() calls are merged (same column overrides).
+   * Accepts both the object form and the 3-arg form: `where("score", ">=", 5)`. */
+  where(w: Where<T>): Finder<T, Inc>;
+  where(column: keyof T & string, op: WhereOpName, value: unknown): Finder<T, Inc>;
+  where(a: Where<T> | (keyof T & string), op?: WhereOpName, value?: unknown): Finder<T, Inc> {
+    const w = typeof a === "string" ? whereFromTriple<T>(a, op as WhereOpName, value) : a;
     return this.extend({ where: { ...this.opts.where, ...w } });
   }
 
   /** Add an ordering; multiple orderBy() calls sort by each in turn. */
-  orderBy(column: keyof T & string, dir: "asc" | "desc" = "asc"): Finder<T> {
+  orderBy(column: keyof T & string, dir: "asc" | "desc" = "asc"): Finder<T, Inc> {
     return this.extend({
-      orderBy: { ...this.opts.orderBy, [column]: dir } as FindOptions<T>["orderBy"],
+      orderBy: { ...this.opts.orderBy, [column]: dir } as FindOptions<T, Inc>["orderBy"],
     });
   }
 
-  limit(n: number): Finder<T> {
+  limit(n: number): Finder<T, Inc> {
     return this.extend({ limit: n });
   }
 
-  offset(n: number): Finder<T> {
+  offset(n: number): Finder<T, Inc> {
     return this.extend({ offset: n });
   }
 
   /** Load relations alongside the rows (see {@link IncludeMap}). */
-  include(map: IncludeMap): Finder<T> {
+  include(map: Inc): Finder<T, Inc> {
     return this.extend({ include: { ...this.opts.include, ...map } });
   }
 
   /** Hydrate belongsTo relations with a single LEFT JOIN query. */
-  join(map: Record<string, boolean>): Finder<T> {
+  join(map: { [K in keyof Inc]?: boolean }): Finder<T, Inc> {
     return this.extend({ join: { ...this.opts.join, ...map } });
   }
 
@@ -813,4 +913,128 @@ export class Finder<T extends object> {
   count(): Promise<number> {
     return this.table.count(this.opts.where);
   }
+
+  /** Whether at least one row matches. */
+  exists(): Promise<boolean> {
+    return this.table.exists(this.opts.where);
+  }
+
+  /** One column's values, in query order: `db.users.orderBy("id").pluck("name")`. */
+  async pluck<K extends keyof T & string>(column: K): Promise<T[K][]> {
+    const rows = await this.all();
+    return rows.map((r) => r[column]);
+  }
+
+  sum(column: keyof T & string): Promise<number | null> {
+    return this.table.aggregate("sum", column, this.opts.where);
+  }
+
+  avg(column: keyof T & string): Promise<number | null> {
+    return this.table.aggregate("avg", column, this.opts.where);
+  }
+
+  min(column: keyof T & string): Promise<number | null> {
+    return this.table.aggregate("min", column, this.opts.where);
+  }
+
+  max(column: keyof T & string): Promise<number | null> {
+    return this.table.aggregate("max", column, this.opts.where);
+  }
+
+  /**
+   * Page through results: `db.users.orderBy("id").paginate(2, 20)` — 1-based
+   * page number. Returns the rows plus the total (unpaged) count.
+   */
+  async paginate(page: number, perPage = 20): Promise<Page<T>> {
+    const p = Math.max(1, Math.floor(page));
+    const per = Math.max(1, Math.floor(perPage));
+    const [rows, total] = await Promise.all([
+      this.limit(per).offset((p - 1) * per).all(),
+      this.count(),
+    ]);
+    return { rows, total, page: p, perPage: per, totalPages: Math.max(1, Math.ceil(total / per)) };
+  }
+}
+
+/** One page of results from {@link Finder.paginate}. */
+export interface Page<T> {
+  rows: T[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+}
+
+// ---------------------------------------------------------------------------
+// User-defined table methods: db.$extend({ posts: { publishAll() {...} } })
+// ---------------------------------------------------------------------------
+
+/** A bag of user methods to graft onto one table. Inside a method, `this` is
+ * the table itself, so custom helpers compose the built-in API:
+ *
+ * ```ts
+ * const xdb = db.$extend({
+ *   users: {
+ *     async top(this: PowderTable<Users>, n: number) {
+ *       return this.orderBy("score", "desc").limit(n).all();
+ *     },
+ *   },
+ * });
+ * await xdb.users.top(3);
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type TableMethods = Record<string, (this: any, ...args: any[]) => unknown>;
+export type PowderExtensions = Record<string, TableMethods>;
+
+/** The client type after `$extend`: extended tables gain their new methods,
+ * and `$transaction` hands the SAME extended client to its callback. */
+export type ExtendedClient<C, E extends PowderExtensions> = {
+  [K in keyof C]: K extends "$transaction"
+    ? <R>(fn: (tx: ExtendedClient<C, E>) => Promise<R>) => Promise<R>
+    : K extends keyof E
+      ? C[K] & E[K]
+      : C[K];
+};
+
+/**
+ * Graft user-defined methods onto a Powder client's tables without mutating
+ * the original. Unknown table names fail loudly. `$transaction` is rewrapped
+ * so the same extensions are available inside transactions.
+ */
+export function extendPowder<C extends object, E extends PowderExtensions>(
+  db: C,
+  extensions: E,
+): ExtendedClient<C, E> {
+  const out: Record<string, unknown> = Object.create(
+    Object.getPrototypeOf(db) as object | null,
+  ) as Record<string, unknown>;
+  Object.assign(out, db);
+
+  for (const [tableName, methods] of Object.entries(extensions)) {
+    const table = (db as Record<string, unknown>)[tableName];
+    if (!(table instanceof PowderTable)) {
+      throw new PowderError(
+        `$extend: \`${tableName}\` is not a table on this client`,
+        tableName,
+        callSite(),
+      );
+    }
+    // Prototype chain keeps the table's own methods; the extension methods
+    // shadow nothing built-in unless deliberately named the same.
+    const augmented = Object.create(table) as Record<string, unknown>;
+    for (const [name, fn] of Object.entries(methods)) {
+      augmented[name] = fn.bind(augmented);
+    }
+    out[tableName] = augmented;
+  }
+
+  // Transactions hand back a client with the SAME extensions applied.
+  const baseTx = (db as { $transaction?: (fn: (tx: C) => Promise<unknown>) => Promise<unknown> })
+    .$transaction;
+  if (typeof baseTx === "function") {
+    out.$transaction = <R>(fn: (tx: ExtendedClient<C, E>) => Promise<R>): Promise<R> =>
+      baseTx.call(db, (tx: C) => fn(extendPowder(tx, extensions))) as Promise<R>;
+  }
+  return out as ExtendedClient<C, E>;
 }

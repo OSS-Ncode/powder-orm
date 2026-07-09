@@ -116,6 +116,11 @@ pub fn scaffold(dir: &str) -> Result<Vec<String>, String> {
 
     let files: Vec<(&str, String)> = vec![
         ("powder.schema.json", SAMPLE_SCHEMA.to_string()),
+        (
+            // Editor autocompletion/validation for powder.schema.json.
+            "powder.schema.schema.json",
+            crate::jsonschema::SCHEMA_OF_SCHEMA.to_string(),
+        ),
         ("seed.json", SEED_JSON.to_string()),
         ("package.json", PACKAGE_JSON.to_string()),
         ("tsconfig.json", TSCONFIG_JSON.to_string()),
@@ -148,7 +153,8 @@ mod tests {
         let dir_s = dir.to_string_lossy().to_string();
 
         let written = scaffold(&dir_s).unwrap();
-        assert_eq!(written.len(), 8);
+        assert_eq!(written.len(), 9);
+        assert!(dir.join("powder.schema.schema.json").exists());
         assert!(dir.join("src/models.ts").exists());
         assert!(scaffold(&dir_s).is_err()); // refuses to overwrite
 

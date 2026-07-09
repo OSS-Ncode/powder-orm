@@ -16,15 +16,20 @@ export { Query, decodeBatch };
 export type { Param, PowderBatch };
 export { DataType } from "./reader.js";
 export type { PowderColumn, Scalar } from "./reader.js";
-export { PowderTable, PowderError, Finder, runNamedQuery } from "./orm.js";
+export { PowderTable, PowderError, Finder, runNamedQuery, extendPowder, whereFromTriple } from "./orm.js";
 export type {
   ColumnMeta,
   ColumnType,
+  ExtendedClient,
   FindOptions,
   IncludeMap,
+  Page,
+  PowderExtensions,
   RelationMeta,
   TableMeta,
+  TableMethods,
   Where,
+  WhereOpName,
   WhereOps,
 } from "./orm.js";
 

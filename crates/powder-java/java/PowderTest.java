@@ -113,7 +113,58 @@ public class PowderTest {
                 }
             });
             check(count(db) == 5, "savepoint kept frank, dropped ghost");
+
+            // --- error branches --------------------------------------------
+
+            // Invalid SQL through queryDirect must not leak or wedge.
+            boolean threw = false;
+            try {
+                db.queryDirect("SELECT * FROM no_such_table");
+            } catch (RuntimeException e) {
+                threw = e.getMessage() != null && e.getMessage().contains("no_such_table");
+            }
+            check(threw, "queryDirect propagates SQL errors");
+
+            // Invalid SQL through the copying path too.
+            threw = false;
+            try {
+                db.query("SELECT * FROM no_such_table");
+            } catch (RuntimeException e) {
+                threw = true;
+            }
+            check(threw, "query propagates SQL errors");
+
+            // Failed transaction body that is NOT a RuntimeException is wrapped.
+            threw = false;
+            try {
+                db.transaction(tx -> { throw new Exception("checked boom"); });
+            } catch (RuntimeException e) {
+                threw = e.getCause() != null && "checked boom".equals(e.getCause().getMessage());
+            }
+            check(threw, "checked exceptions from a tx body are wrapped");
+
+            // Reading a direct batch after close is rejected; double close ok.
+            Batch direct = db.queryDirect("SELECT id FROM users ORDER BY id");
+            check(direct.isDirect(), "direct batch aliases native memory");
+            direct.close();
+            direct.close(); // idempotent
+            threw = false;
+            try {
+                direct.column("id").getLong(0);
+            } catch (RuntimeException e) {
+                threw = true;
+            }
+            check(threw, "closed direct batch refuses reads");
         }
+
+        // Every operation on a closed client fails fast (checkOpen branches).
+        Client closed = Powder.connect("sqlite::memory:");
+        closed.close();
+        int rejected = 0;
+        try { closed.execute("SELECT 1"); } catch (IllegalStateException e) { rejected++; }
+        try { closed.query("SELECT 1"); } catch (IllegalStateException e) { rejected++; }
+        try { closed.queryDirect("SELECT 1"); } catch (IllegalStateException e) { rejected++; }
+        check(rejected == 3, "closed client rejects execute/query/queryDirect");
 
         System.out.println("java jni OK (" + checks + " checks)");
     }

@@ -1,28 +1,25 @@
-# powder-go — Go bindings
+# powder-go — Go 바인딩
 
-Go client for the Powder engine. It calls the Rust core through the stable C
-ABI exported by the `powder-ffi` crate, and decodes the zero-copy PCB columnar
-buffer in pure Go.
+Powder 엔진의 Go 클라이언트. `powder-ffi` 크레이트가 내보내는 안정 C ABI를 통해 Rust 코어를 호출하고, zero-copy PCB 컬럼 버퍼를 순수 Go로 디코드한다.
 
-- **Windows**: no C toolchain needed — the library is bound with `syscall`, so
-  the package builds with `CGO_ENABLED=0`.
-- **Linux / macOS**: `dlopen`s the shared library via cgo.
+- **Windows**: C 툴체인 불필요 — 라이브러리를 `syscall`로 바인딩하므로 `CGO_ENABLED=0`으로 빌드된다.
+- **Linux / macOS**: cgo를 통해 공유 라이브러리를 `dlopen`한다.
 
-## Build & test
+## 빌드 & 테스트
 
 ```bash
-# 1. Native C-ABI library
+# 1. 네이티브 C-ABI 라이브러리
 cargo build -p powder-ffi --release
 #    -> <target>/release/powder_ffi.dll | libpowder_ffi.so | libpowder_ffi.dylib
 
-# 2. Run the Go tests against it
+# 2. 이를 대상으로 Go 테스트 실행
 cd bindings/go
 POWDER_LIB=<target>/release/powder_ffi.dll go test ./...
 ```
 
-`POWDER_LIB` points the tests at the native library; without it they skip.
+`POWDER_LIB`가 테스트에 네이티브 라이브러리 위치를 알려준다; 없으면 테스트는 스킵된다.
 
-## Usage
+## 사용법
 
 ```go
 import powder "github.com/powder/powder-go"
@@ -36,28 +33,23 @@ defer db.Close()
 db.Exec("CREATE TABLE users (id INTEGER, name TEXT, score REAL)")
 db.Exec("INSERT INTO users VALUES (?,?,?)", 1, "alice", 9.5)
 
-// Fluent builder, or raw SQL with bound parameters.
+// 플루언트 빌더, 또는 바인딩 파라미터가 있는 raw SQL.
 batch, err := db.Run(powder.Table("users").Select("id", "name").OrderBy("id", "ASC"))
 name := batch.Column("name")
 for r := 0; r < batch.NumRows(); r++ {
     fmt.Println(name.String(r))
 }
 
-// Transactions; nested calls use savepoints.
+// 트랜잭션; 중첩 호출은 savepoint 사용.
 err = db.Transaction(func(tx *powder.Client) error {
     _, err := tx.Exec("INSERT INTO users VALUES (2, 'bob', 7.0)")
     return err
 })
 ```
 
-## Notes
+## 참고
 
-- Bound parameters accept Go integers, floats, `string`, `bool`, and `nil`.
-  They cross the ABI as a JSON array string, keeping the C surface to plain
-  pointers and integers.
-- `Column` reads values straight out of the little-endian PCB payload; nothing
-  is materialized until you ask for it. `Batch.Rows()` is the convenience
-  (copying) view.
-- The PCB payload is copied once from native memory into a Go slice, which the
-  GC then owns — Go cannot safely hold a pointer into a foreign allocation.
-- `Client` serializes its own calls; the Rust core owns a single connection.
+- 바인딩 파라미터는 Go 정수, 부동소수점, `string`, `bool`, `nil`을 받는다. ABI를 JSON 배열 문자열로 넘어가므로 C 표면이 단순 포인터와 정수로 유지된다.
+- `Column`은 리틀 엔디언 PCB 페이로드에서 값을 바로 읽는다; 요청하기 전까지 아무것도 구체화되지 않는다. `Batch.Rows()`는 편의용(복사) 뷰다.
+- PCB 페이로드는 네이티브 메모리에서 Go 슬라이스로 한 번 복사되고 이후 GC가 소유한다 — Go는 외부 할당에 대한 포인터를 안전하게 들고 있을 수 없다.
+- `Client`는 자신의 호출을 직렬화한다; Rust 코어가 단일 연결을 소유한다.

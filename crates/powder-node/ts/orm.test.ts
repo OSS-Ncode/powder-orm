@@ -546,3 +546,118 @@ test("PowderError carries SQL and a clickable caller site", async () => {
     (e: PowderError) => e instanceof PowderError && /unknown column/.test(e.message),
   );
 });
+
+test("beginner syntax: 3-arg where, exists, pluck, aggregates, paginate", async () => {
+  const users = await setup();
+  await users.createMany([
+    { id: 1, name: "alice", score: 9.5, active: true },
+    { id: 2, name: "bob", score: 4.0, active: false },
+    { id: 3, name: "carol", score: 7.0, active: true },
+    { id: 4, name: "dave", score: null, active: true },
+  ]);
+
+  // 3-arg where on the table and on the finder; merges with object form.
+  assert.deepEqual(
+    (await users.where("score", ">=", 5).orderBy("id").pluck("name")),
+    ["alice", "carol"],
+  );
+  assert.equal(await users.where("name", "like", "a%").count(), 1);
+  assert.equal(
+    await users.where({ active: true }).where("score", ">", 8).count(),
+    1,
+  );
+  assert.equal(await users.where("id", "in", [1, 3]).count(), 2);
+
+  // exists
+  assert.equal(await users.where("score", ">", 100).exists(), false);
+  assert.equal(await users.exists({ active: true }), true);
+
+  // aggregates (NULL score is ignored by SQL aggregate semantics)
+  assert.equal(await users.where({ active: true }).sum("score"), 16.5);
+  assert.equal(await users.where({ active: true }).avg("score"), 8.25);
+  assert.equal(await users.where({}).min("score"), 4.0);
+  assert.equal(await users.where({}).max("score"), 9.5);
+  assert.equal(await users.where("id", ">", 99).sum("score"), null);
+
+  // unknown operator fails loudly
+  await assert.rejects(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async () => users.where("score", "=~" as any, 1).all(),
+    PowderError,
+  );
+
+  // paginate: 1-based, returns total across all pages
+  const page1 = await users.orderBy("id").paginate(1, 3);
+  assert.deepEqual(page1.rows.map((r) => r.id), [1, 2, 3]);
+  assert.equal(page1.total, 4);
+  assert.equal(page1.totalPages, 2);
+  const page2 = await users.orderBy("id").paginate(2, 3);
+  assert.deepEqual(page2.rows.map((r) => r.id), [4]);
+});
+
+test("createMany safeguards: variable-limit clamp and shape validation", async () => {
+  const users = await setup();
+
+  // A chunk size that would exceed SQLite's bound-variable ceiling is
+  // clamped internally instead of failing (4 columns x 20000 rows/chunk
+  // would be 80k variables).
+  const many: Array<Partial<User>> = [];
+  for (let i = 1; i <= 12_000; i++) {
+    many.push({ id: i, name: `u${i}`, score: i / 10, active: i % 2 === 0 });
+  }
+  const n = await users.createMany(many, 1_000_000);
+  assert.equal(n, 12_000);
+  assert.equal(await users.count(), 12_000);
+
+  // Heterogeneous rows fail loudly instead of inserting silent NULLs.
+  await assert.rejects(
+    async () =>
+      users.createMany([
+        { id: 20_001, name: "full", score: 1, active: true },
+        { id: 20_002, name: "missing-active", score: 1 },
+      ]),
+    (e: unknown) => e instanceof PowderError && /row 1 has columns/.test((e as Error).message),
+  );
+});
+
+test("$extend grafts user methods onto tables (and into transactions)", async () => {
+  const client = await Client.connect("sqlite::memory:");
+  await client.execute(
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL, active INTEGER NOT NULL)",
+  );
+  const { extendPowder } = await import("./orm.js");
+  const base = {
+    users: new PowderTable<User>(client, USERS_META),
+    $transaction: <T>(fn: (tx: { users: PowderTable<User> }) => Promise<T>): Promise<T> =>
+      client.transaction(() => fn(base)),
+  };
+  const db = extendPowder(base, {
+    users: {
+      async top(this: PowderTable<User>, n: number): Promise<User[]> {
+        return this.orderBy("score", "desc").limit(n).all();
+      },
+      async createManyActive(this: PowderTable<User>, names: string[]): Promise<number> {
+        return this.createMany(
+          names.map((name, i) => ({ id: 100 + i, name, score: 0, active: true })),
+        );
+      },
+    },
+  });
+
+  // Custom method composes built-ins; built-ins still work on the extended table.
+  await db.users.createManyActive(["a", "b", "c"]);
+  assert.equal(await db.users.count(), 3);
+  await db.users.update({ where: { name: "a" }, data: { score: 9 } });
+  const top = await db.users.top(1);
+  assert.equal(top[0]?.name, "a");
+
+  // Extensions survive into transactions; unknown table name fails loudly.
+  await db.$transaction(async (tx) => {
+    const t = await tx.users.top(2);
+    assert.equal(t.length, 2);
+  });
+  assert.throws(
+    () => extendPowder(base, { nope: { x() {} } } as never),
+    PowderError,
+  );
+});

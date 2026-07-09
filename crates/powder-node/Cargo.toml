@@ -11,7 +11,7 @@ description = "Node.js (napi-rs) bindings for the Powder engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-powder-core.workspace = true
+powder-core = { workspace = true, features = ["postgres", "mysql"] }
 napi = { version = "2", default-features = false, features = ["napi8", "async", "tokio_rt"] }
 napi-derive = "2"
 # Windows' default heap is slow for the allocation-heavy columnar build path;

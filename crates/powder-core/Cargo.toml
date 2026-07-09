@@ -7,6 +7,13 @@ authors.workspace = true
 repository.workspace = true
 description = "Zero-copy columnar database engine core (Powder)"
 
+[features]
+default = []
+# PostgreSQL runtime backend: `Client::connect("postgres://...")`.
+postgres = ["dep:postgres"]
+# MySQL/MariaDB runtime backend: `Client::connect("mysql://...")`.
+mysql = ["dep:mysql"]
+
 [dependencies]
 thiserror.workspace = true
 tokio.workspace = true
@@ -14,6 +21,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Persistent worker pool for the parallel table scan — avoids per-query
 # thread spawn/teardown.
 rayon = "1"
+postgres = { version = "0.19", optional = true }
+mysql = { version = "25", optional = true, default-features = false, features = ["minimal"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

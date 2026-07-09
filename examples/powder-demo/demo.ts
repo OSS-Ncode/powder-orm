@@ -13,7 +13,8 @@
  */
 
 import { Client } from "../../crates/powder-node/dist/index.js";
-import { powder } from "./models.js";
+import { PowderTable } from "../../crates/powder-node/dist/index.js";
+import { powder, type Posts, type Users } from "./models.js";
 
 async function main() {
   const client = await Client.connect("sqlite::memory:");
@@ -92,6 +93,30 @@ async function main() {
     `nested include: post "${deep[0].title}" by ${deep[0].user?.name},`,
     `who wrote ${deep[0].user?.posts?.length} posts`,
   );
+
+  // User-defined table methods: graft your own helpers with $extend and
+  // call them like built-ins (db.posts.byUser / db.users.top).
+  const xdb = db.$extend({
+    posts: {
+      async byUser(this: PowderTable<Posts>, userId: number): Promise<Posts[]> {
+        return this.where({ user_id: userId }).orderBy("id").all();
+      },
+    },
+    users: {
+      async top(this: PowderTable<Users>, n: number): Promise<Users[]> {
+        return this.orderBy("score", "desc").limit(n).all();
+      },
+    },
+  });
+  const mine = await xdb.posts.byUser(1);
+  const best = await xdb.users.top(1);
+  console.log(`$extend: user 1 has ${mine.length} posts; top scorer is ${best[0]?.name}`);
+
+  // Beginner syntax v2: 3-arg where + aggregates + paginate.
+  const rich = await db.users.where("score", ">=", 5).count();
+  const avgScore = await db.users.where({ active: true }).avg("score");
+  const page = await db.users.orderBy("id").paginate(1, 2);
+  console.log(`where("score",">=",5) -> ${rich}, avg=${avgScore}, page 1/${page.totalPages}`);
 
   // Click-to-jump: the PowderError below points at THIS file and line.
   try {

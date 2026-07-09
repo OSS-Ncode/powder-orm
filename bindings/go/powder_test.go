@@ -209,3 +209,48 @@ func TestClosedClientRejectsUse(t *testing.T) {
 		t.Error("query on a closed client should fail")
 	}
 }
+
+func TestQueryBuilderAndColumnAccessors(t *testing.T) {
+	db := open(t)
+	seed(t, db)
+
+	// Fluent builder: Filter + OrderBy + Limit + Offset.
+	batch, err := db.Run(powder.Table("users").
+		Select("id", "name", "score", "active").
+		Filter("id >= ?", 1).
+		OrderBy("id", "ASC").
+		Limit(2).
+		Offset(1))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if batch.NumRows() != 2 {
+		t.Fatalf("limit/offset: got %d rows, want 2", batch.NumRows())
+	}
+
+	// Column accessors across all four types.
+	cols := batch.Columns()
+	if len(cols) != 4 {
+		t.Fatalf("columns: got %d, want 4", len(cols))
+	}
+	idCol := batch.Column("id")
+	if idCol.Name() != "id" || idCol.Len() != 2 {
+		t.Errorf("id column meta: name=%q len=%d", idCol.Name(), idCol.Len())
+	}
+	if got := idCol.Type().String(); got != "int64" {
+		t.Errorf("id type: %q", got)
+	}
+	// SQLite has no boolean type; the 0/1 column arrives as int64.
+	// Offset 1 → rows are bob (inactive) and héllo (active).
+	act := batch.Column("active")
+	if act.Type() != powder.Int64 || act.Int64(0) != 0 || act.Int64(1) != 1 {
+		t.Errorf("active flags: type=%v got (%d,%d), want int64 (0,1)",
+			act.Type(), act.Int64(0), act.Int64(1))
+	}
+	if batch.Column("score").Type().String() != "float64" {
+		t.Errorf("score type: %q", batch.Column("score").Type().String())
+	}
+	if batch.Column("name").Type().String() != "utf8" {
+		t.Errorf("name type: %q", batch.Column("name").Type().String())
+	}
+}

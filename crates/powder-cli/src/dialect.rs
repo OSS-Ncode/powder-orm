@@ -63,7 +63,11 @@ pub fn by_name(name: &str) -> Result<Box<dyn SqlDialect>, String> {
     match name.to_ascii_lowercase().as_str() {
         "sqlite" => Ok(Box::new(Sqlite)),
         "postgres" | "postgresql" | "pg" => Ok(Box::new(Postgres)),
-        other => Err(format!("unknown dialect `{other}` (expected sqlite or postgres)")),
+        "mysql" | "mariadb" => Ok(Box::new(MySql)),
+        "oracle" => Ok(Box::new(Oracle)),
+        other => Err(format!(
+            "unknown dialect `{other}` (expected sqlite, postgres, mysql, or oracle)"
+        )),
     }
 }
 
@@ -145,6 +149,182 @@ impl SqlDialect for Postgres {
         }
         if let Some(r) = &col.def.references {
             ddl.push_str(&format!(" REFERENCES {}({})", r.table, r.column));
+        }
+        Ok(ddl)
+    }
+}
+
+/// MySQL / MariaDB: DDL generation. Text primary-key members get a length
+/// prefix requirement, so schema-level TEXT is rendered as `VARCHAR(255)`
+/// when it participates in a key.
+pub struct MySql;
+
+impl SqlDialect for MySql {
+    fn type_sql(&self, ct: ColumnType) -> &'static str {
+        match ct {
+            ColumnType::Int => "BIGINT",
+            ColumnType::Float => "DOUBLE",
+            ColumnType::Text => "TEXT",
+            ColumnType::Bool => "TINYINT(1)",
+        }
+    }
+
+    fn create_table(&self, table: &Table) -> String {
+        let pk_cols: Vec<&Column> = table.columns.iter().filter(|c| c.def.primary_key).collect();
+        let inline_pk = pk_cols.len() == 1;
+
+        let mut parts: Vec<String> = table
+            .columns
+            .iter()
+            .map(|c| {
+                // MySQL cannot index bare TEXT — key members become VARCHAR.
+                let is_key = c.def.primary_key
+                    || table.foreign_keys.iter().any(|fk| fk.columns.contains(&c.name));
+                let ty = if c.def.column_type == ColumnType::Text && is_key {
+                    "VARCHAR(255)"
+                } else {
+                    self.type_sql(c.def.column_type)
+                };
+                let mut s = format!("{} {}", c.name, ty);
+                if inline_pk && c.def.primary_key {
+                    s.push_str(" PRIMARY KEY");
+                } else if !c.def.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                s
+            })
+            .collect();
+
+        if pk_cols.len() > 1 {
+            parts.push(format!(
+                "PRIMARY KEY ({})",
+                pk_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        for fk in &table.foreign_keys {
+            parts.push(format!(
+                "FOREIGN KEY ({}) REFERENCES {}({})",
+                fk.columns.join(", "),
+                fk.ref_table,
+                fk.ref_columns.join(", ")
+            ));
+        }
+
+        format!(
+            "CREATE TABLE IF NOT EXISTS {} ({})",
+            table.name,
+            parts.join(", ")
+        )
+    }
+
+    fn add_column(&self, table: &Table, col: &Column) -> Result<String, String> {
+        if col.def.primary_key {
+            return Err(format!(
+                "table `{}`: cannot add primary key column `{}` to an existing table",
+                table.name, col.name
+            ));
+        }
+        let mut ddl = format!(
+            "ALTER TABLE {} ADD COLUMN {} {}",
+            table.name,
+            col.name,
+            self.type_sql(col.def.column_type)
+        );
+        if !col.def.nullable {
+            ddl.push_str(match self.type_sql(col.def.column_type) {
+                "TEXT" => " NOT NULL",
+                _ => " NOT NULL DEFAULT 0",
+            });
+        }
+        if let Some(r) = &col.def.references {
+            ddl.push_str(&format!(", ADD FOREIGN KEY ({}) REFERENCES {}({})", col.name, r.table, r.column));
+        }
+        Ok(ddl)
+    }
+}
+
+/// Oracle: DDL generation. Notable differences from the other dialects:
+/// no `IF NOT EXISTS` (portable across versions — `powder migrate` only
+/// issues CREATE for tables it verified missing), `ADD (col type)` syntax
+/// for new columns, and length-typed VARCHAR2 for text.
+pub struct Oracle;
+
+impl SqlDialect for Oracle {
+    fn type_sql(&self, ct: ColumnType) -> &'static str {
+        match ct {
+            ColumnType::Int => "NUMBER(19)",
+            ColumnType::Float => "BINARY_DOUBLE",
+            ColumnType::Text => "VARCHAR2(4000)",
+            ColumnType::Bool => "NUMBER(1)",
+        }
+    }
+
+    fn create_table(&self, table: &Table) -> String {
+        let pk_cols: Vec<&Column> = table.columns.iter().filter(|c| c.def.primary_key).collect();
+        let inline_pk = pk_cols.len() == 1;
+
+        let mut parts: Vec<String> = table
+            .columns
+            .iter()
+            .map(|c| {
+                let mut s = format!("{} {}", c.name, self.type_sql(c.def.column_type));
+                if inline_pk && c.def.primary_key {
+                    s.push_str(" PRIMARY KEY");
+                } else if !c.def.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                s
+            })
+            .collect();
+
+        if pk_cols.len() > 1 {
+            parts.push(format!(
+                "PRIMARY KEY ({})",
+                pk_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        for fk in &table.foreign_keys {
+            parts.push(format!(
+                "FOREIGN KEY ({}) REFERENCES {}({})",
+                fk.columns.join(", "),
+                fk.ref_table,
+                fk.ref_columns.join(", ")
+            ));
+        }
+
+        // No IF NOT EXISTS: only Oracle 23ai+ accepts it, and the migrate
+        // runner already guards CREATE behind an existence check.
+        format!("CREATE TABLE {} ({})", table.name, parts.join(", "))
+    }
+
+    fn add_column(&self, table: &Table, col: &Column) -> Result<String, String> {
+        if col.def.primary_key {
+            return Err(format!(
+                "table `{}`: cannot add primary key column `{}` to an existing table",
+                table.name, col.name
+            ));
+        }
+        let mut ddl = format!(
+            "ALTER TABLE {} ADD ({} {}",
+            table.name,
+            col.name,
+            self.type_sql(col.def.column_type)
+        );
+        if !col.def.nullable {
+            ddl.push_str(match col.def.column_type {
+                ColumnType::Text => " DEFAULT ' ' NOT NULL",
+                _ => " DEFAULT 0 NOT NULL",
+            });
+        }
+        ddl.push(')');
+        if col.def.references.is_some() {
+            // Column-level REFERENCES inside ADD (…) is version-sensitive;
+            // keep the surface predictable and ask for a rebuild-style change.
+            return Err(format!(
+                "table `{}`: adding a foreign-key column in place is not supported on Oracle; \
+                 add the column first, then a separate ALTER TABLE ... ADD CONSTRAINT",
+                table.name
+            ));
         }
         Ok(ddl)
     }
@@ -240,6 +420,85 @@ mod tests {
         assert!(by_name("sqlite").is_ok());
         assert!(by_name("postgres").is_ok());
         assert!(by_name("pg").is_ok());
-        assert!(by_name("oracle").is_err());
+        assert!(by_name("mysql").is_ok());
+        assert!(by_name("mariadb").is_ok());
+        assert!(by_name("oracle").is_ok());
+        assert!(by_name("mssql").is_err());
+    }
+
+    #[test]
+    fn oracle_maps_types_without_if_not_exists() {
+        let schema = Schema::parse(
+            r#"{"tables":{
+                "users":{"columns":{
+                    "id":{"type":"int","primaryKey":true},
+                    "name":{"type":"text"},
+                    "score":{"type":"float","nullable":true},
+                    "active":{"type":"bool"}
+                }}
+            }}"#,
+        )
+        .unwrap();
+        let ddl = Oracle.create_table(&schema.tables[0]);
+        assert_eq!(
+            ddl,
+            "CREATE TABLE users (id NUMBER(19) PRIMARY KEY, name VARCHAR2(4000) NOT NULL, \
+             score BINARY_DOUBLE, active NUMBER(1) NOT NULL)"
+        );
+        assert!(!ddl.contains("IF NOT EXISTS"));
+    }
+
+    #[test]
+    fn oracle_add_column_uses_paren_syntax() {
+        let schema = Schema::parse(
+            r#"{"tables":{"t":{"columns":{
+                "id":{"type":"int","primaryKey":true},
+                "bio":{"type":"text","nullable":true}
+            }}}}"#,
+        )
+        .unwrap();
+        let t = &schema.tables[0];
+        let bio = t.columns.iter().find(|c| c.name == "bio").unwrap();
+        assert_eq!(
+            Oracle.add_column(t, bio).unwrap(),
+            "ALTER TABLE t ADD (bio VARCHAR2(4000))"
+        );
+    }
+
+    #[test]
+    fn mysql_maps_types_and_varchars_key_text() {
+        let schema = Schema::parse(
+            r#"{"tables":{
+                "users":{"columns":{
+                    "code":{"type":"text","primaryKey":true},
+                    "name":{"type":"text"},
+                    "score":{"type":"float","nullable":true},
+                    "active":{"type":"bool"}
+                }}
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            MySql.create_table(&schema.tables[0]),
+            "CREATE TABLE IF NOT EXISTS users (code VARCHAR(255) PRIMARY KEY, name TEXT NOT NULL, score DOUBLE, active TINYINT(1) NOT NULL)"
+        );
+    }
+
+    #[test]
+    fn mysql_composite_pk_and_fk() {
+        let schema = Schema::parse(
+            r#"{"tables":{
+                "users":{"columns":{"id":{"type":"int","primaryKey":true}}},
+                "posts":{"columns":{
+                    "id":{"type":"int","primaryKey":true},
+                    "user_id":{"type":"int","references":{"table":"users","column":"id"}}
+                }}
+            }}"#,
+        )
+        .unwrap();
+        let posts = schema.tables.iter().find(|t| t.name == "posts").unwrap();
+        let ddl = MySql.create_table(posts);
+        assert!(ddl.contains("user_id BIGINT NOT NULL"), "{ddl}");
+        assert!(ddl.contains("FOREIGN KEY (user_id) REFERENCES users(id)"), "{ddl}");
     }
 }

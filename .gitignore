@@ -1,11 +1,11 @@
 # Rust
 /target
-Cargo.lock
 
 # Node
 node_modules/
 dist/
 *.node
+*.tsbuildinfo
 
 # Python
 .venv/
@@ -17,8 +17,15 @@ __pycache__/
 # OS
 .DS_Store
 
-# Test
-/bench-site
+# Bench-site runtime artifacts (the site itself is tracked)
+bench-site/
+bench-site/generated/
+bench-site/*.db
+bench-site/*.db-journal
+
+# Databases created by demos / tests
+*.sqlite
+app.db
 
 # Examples (compiled output)
 examples/powder-demo/*.js
@@ -26,4 +33,22 @@ examples/powder-demo/*.js
 # Java binding build output
 crates/powder-java/out/
 *.class
+
+# Go
+bindings/go/*.test
+bench-site/bench/go-bench/go-bench*
+!bench-site/bench/go-bench/go-bench.go
+
+# Coverage artifacts
+coverage/
+.coverage
+*.pdb
+*.profraw
+*.exec
+
+# Bench runner deps (downloaded jars)
+bench-site/bench/java-bench/lib/
+bench-site/bench/java-bench/out/
+
+#development docs
 docs/

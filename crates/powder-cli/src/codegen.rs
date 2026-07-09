@@ -147,11 +147,11 @@ pub fn typescript(schema: &Schema, import_from: &str) -> String {
     out.push_str("// Regenerate after changing powder.schema.json.\n\n");
     if schema.queries.is_empty() {
         out.push_str(&format!(
-            "import {{ Client, PowderTable, type TableMeta }} from \"{import_from}\";\n\n"
+            "import {{ Client, PowderTable, extendPowder, type ExtendedClient, type PowderExtensions, type TableMeta }} from \"{import_from}\";\n\n"
         ));
     } else {
         out.push_str(&format!(
-            "import {{ Client, PowderTable, runNamedQuery, type TableMeta }} from \"{import_from}\";\n\n"
+            "import {{ Client, PowderTable, extendPowder, runNamedQuery, type ExtendedClient, type PowderExtensions, type TableMeta }} from \"{import_from}\";\n\n"
         ));
     }
 
@@ -181,6 +181,28 @@ pub fn typescript(schema: &Schema, import_from: &str) -> String {
             ));
         }
         out.push_str("}\n\n");
+
+        // Per-table include type: relation names (and their nesting) become
+        // editor completions instead of free-form strings.
+        out.push_str(&format!(
+            "/** Relations loadable on `{}` — powers `include`/`join` autocompletion. */\n",
+            table.name
+        ));
+        if relations.is_empty() {
+            out.push_str(&format!(
+                "export type {ty}Include = Record<never, never>;\n\n"
+            ));
+        } else {
+            out.push_str(&format!("export type {ty}Include = {{\n"));
+            for rel in &relations {
+                let target = pascal(&rel.target_table);
+                out.push_str(&format!(
+                    "  {}?: boolean | {{ include?: {target}Include }};\n",
+                    rel.name
+                ));
+            }
+            out.push_str("};\n\n");
+        }
 
         out.push_str(&format!(
             "/** AOT-compiled metadata for `{}` (SQL precompiled at generation time). */\n",
@@ -270,15 +292,19 @@ pub fn typescript(schema: &Schema, import_from: &str) -> String {
     out.push_str("export interface PowderClient {\n");
     for table in &schema.tables {
         out.push_str(&format!(
-            "  {}: PowderTable<{}>;\n",
+            "  {}: PowderTable<{ty}, {ty}Include>;\n",
             table.name,
-            pascal(&table.name)
+            ty = pascal(&table.name)
         ));
     }
     if !schema.queries.is_empty() {
         out.push_str("  /** Custom named queries: `db.$queries.name({...})`. */\n");
         out.push_str("  $queries: PowderQueries;\n");
     }
+    out.push_str(
+        "  /** Graft your own table methods: `db.$extend({ posts: { publishAll() {...} } })`. */\n",
+    );
+    out.push_str("  $extend<E extends PowderExtensions>(ext: E): ExtendedClient<PowderClient, E>;\n");
     out.push_str(
         "  /** Run `fn` inside BEGIN IMMEDIATE; commits on return, rolls back on throw. */\n",
     );
@@ -289,10 +315,10 @@ pub fn typescript(schema: &Schema, import_from: &str) -> String {
     out.push_str("  const api: PowderClient = {\n");
     for table in &schema.tables {
         out.push_str(&format!(
-            "    {}: new PowderTable<{}>(client, {}_META),\n",
+            "    {}: new PowderTable<{ty}, {ty}Include>(client, {}_META),\n",
             table.name,
-            pascal(&table.name),
-            shout(&table.name)
+            shout(&table.name),
+            ty = pascal(&table.name)
         ));
     }
     if !schema.queries.is_empty() {
@@ -323,6 +349,7 @@ pub fn typescript(schema: &Schema, import_from: &str) -> String {
         }
         out.push_str("    },\n");
     }
+    out.push_str("    $extend: (ext) => extendPowder(api, ext),\n");
     out.push_str("    $transaction: (fn) => client.transaction(() => fn(api)),\n");
     out.push_str("  };\n  return api;\n}\n");
     out
@@ -537,7 +564,8 @@ mod tests {
         assert!(ts.contains("score: number | null;"));
         assert!(ts.contains("selectAll: \"SELECT id, name, score, active FROM users\""));
         assert!(ts.contains("insert: \"INSERT INTO users (id, name, score, active) VALUES (?, ?, ?, ?)\""));
-        assert!(ts.contains("users: new PowderTable<Users>(client, USERS_META)"));
+        assert!(ts.contains("users: new PowderTable<Users, UsersInclude>(client, USERS_META)"));
+        assert!(ts.contains("export type UsersInclude"));
         // belongsTo: posts.user_id -> users.id surfaces as `user`.
         assert!(ts.contains("user?: Users | null;"));
         assert!(ts.contains(

@@ -129,6 +129,10 @@ pub struct Schema {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSchema {
+    /// Editor JSON-Schema pointer (`powder generate` ignores it).
+    #[serde(default, rename = "$schema")]
+    #[allow(dead_code)]
+    schema_ref: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     database: Option<String>,
@@ -439,6 +443,7 @@ impl Table {
 
 /// The default schema written by `powder init` / `powder new`.
 pub const SAMPLE_SCHEMA: &str = r#"{
+  "$schema": "./powder.schema.schema.json",
   "database": "sqlite",
   "tables": {
     "users": {

@@ -25,6 +25,22 @@ use crate::schema::{DataType, Field};
 /// connection, serialized behind a mutex.
 #[derive(Clone)]
 pub struct Client {
+    inner: Backend,
+}
+
+/// The engine behind a [`Client`]. SQLite is bundled; PostgreSQL is opt-in
+/// via the `postgres` cargo feature and selected by connection URL.
+#[derive(Clone)]
+enum Backend {
+    Sqlite(SqliteClient),
+    #[cfg(feature = "postgres")]
+    Pg(Arc<crate::pg::PgBackend>),
+    #[cfg(feature = "mysql")]
+    My(Arc<crate::my::MyBackend>),
+}
+
+#[derive(Clone)]
+struct SqliteClient {
     conn: Arc<Mutex<Connection>>,
     cache: Arc<Mutex<QueryCache>>,
     /// Canonical open target — used to open extra read-only connections for
@@ -151,8 +167,140 @@ impl Client {
     /// Connect using a URL.
     ///
     /// Accepts `sqlite::memory:`, `:memory:`, `sqlite://<path>`,
-    /// `sqlite:<path>`, or a bare filesystem path.
+    /// `sqlite:<path>`, or a bare filesystem path. With the `postgres`
+    /// feature enabled, `postgres://` / `postgresql://` URLs open a
+    /// PostgreSQL connection instead.
     pub async fn connect(url: &str) -> Result<Self> {
+        if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+            #[cfg(feature = "postgres")]
+            {
+                let url = url.to_string();
+                let backend = tokio::task::spawn_blocking(move || crate::pg::PgBackend::connect(&url))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))??;
+                return Ok(Self {
+                    inner: Backend::Pg(Arc::new(backend)),
+                });
+            }
+            #[cfg(not(feature = "postgres"))]
+            return Err(Error::InvalidUrl(
+                "postgres:// URLs need powder-core built with the `postgres` feature".into(),
+            ));
+        }
+        if url.starts_with("oracle://") {
+            // Honest failure over silent misroute: an Oracle runtime needs
+            // ODPI-C plus Oracle Instant Client on the machine, which the
+            // engine does not bundle. DDL generation works today
+            // (`powder ddl --dialect oracle`).
+            return Err(Error::Unsupported(
+                "oracle:// runtime is not bundled (needs Oracle Instant Client); \
+                 use `powder ddl --dialect oracle` for schema DDL"
+                    .into(),
+            ));
+        }
+        if url.starts_with("mysql://") || url.starts_with("mariadb://") {
+            #[cfg(feature = "mysql")]
+            {
+                let url = url.replace("mariadb://", "mysql://");
+                let backend = tokio::task::spawn_blocking(move || crate::my::MyBackend::connect(&url))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))??;
+                return Ok(Self {
+                    inner: Backend::My(Arc::new(backend)),
+                });
+            }
+            #[cfg(not(feature = "mysql"))]
+            return Err(Error::InvalidUrl(
+                "mysql:// URLs need powder-core built with the `mysql` feature".into(),
+            ));
+        }
+        Ok(Self {
+            inner: Backend::Sqlite(SqliteClient::connect(url).await?),
+        })
+    }
+
+    /// Run a statement that does not return rows (INSERT/UPDATE/DDL); returns
+    /// the number of affected rows.
+    pub async fn execute(&self, sql: &str, params: Vec<Value>) -> Result<usize> {
+        match &self.inner {
+            Backend::Sqlite(s) => s.execute(sql, params).await,
+            #[cfg(feature = "postgres")]
+            Backend::Pg(p) => {
+                let (p, sql) = (p.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || p.execute(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+            #[cfg(feature = "mysql")]
+            Backend::My(m) => {
+                let (m, sql) = (m.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || m.execute(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+        }
+    }
+
+    /// Run a query and return the result set as a columnar [`RecordBatch`].
+    pub async fn query(&self, sql: &str, params: Vec<Value>) -> Result<RecordBatch> {
+        match &self.inner {
+            Backend::Sqlite(s) => s.query(sql, params).await,
+            #[cfg(feature = "postgres")]
+            Backend::Pg(p) => {
+                let (p, sql) = (p.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || p.query(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+            #[cfg(feature = "mysql")]
+            Backend::My(m) => {
+                let (m, sql) = (m.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || m.query(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+        }
+    }
+
+    /// Synchronous, non-blocking cache probe (SQLite `:memory:` only —
+    /// other backends always return `None`).
+    pub fn probe_cache(&self, sql: &str, params: Vec<Value>) -> Option<Arc<Vec<u8>>> {
+        match &self.inner {
+            Backend::Sqlite(s) => s.probe_cache(sql, params),
+            #[cfg(feature = "postgres")]
+            Backend::Pg(_) => None,
+            #[cfg(feature = "mysql")]
+            Backend::My(_) => None,
+        }
+    }
+
+    /// Run a query and return the result already serialized as a PCB buffer,
+    /// shared through the query cache where the backend supports it.
+    pub async fn query_bytes_shared(&self, sql: &str, params: Vec<Value>) -> Result<Arc<Vec<u8>>> {
+        match &self.inner {
+            Backend::Sqlite(s) => s.query_bytes_shared(sql, params).await,
+            #[cfg(feature = "postgres")]
+            Backend::Pg(_) => {
+                let batch = self.query(sql, params).await?;
+                Ok(Arc::new(batch.encode()))
+            }
+            #[cfg(feature = "mysql")]
+            Backend::My(_) => {
+                let batch = self.query(sql, params).await?;
+                Ok(Arc::new(batch.encode()))
+            }
+        }
+    }
+
+    /// [`Self::query_bytes_shared`], materialized to an owned buffer.
+    pub async fn query_bytes(&self, sql: &str, params: Vec<Value>) -> Result<Vec<u8>> {
+        let shared = self.query_bytes_shared(sql, params).await?;
+        Ok(Arc::try_unwrap(shared).unwrap_or_else(|arc| arc.as_ref().clone()))
+    }
+}
+
+impl SqliteClient {
+    async fn connect(url: &str) -> Result<Self> {
         let in_memory = url == ":memory:" || url == "sqlite::memory:";
         let url = url.to_string();
         let (conn, canonical) = tokio::task::spawn_blocking(move || open_connection(&url))
@@ -279,12 +427,6 @@ impl Client {
             Ok(bytes)
         })
         .await
-    }
-
-    /// [`Self::query_bytes_shared`], materialized to an owned buffer.
-    pub async fn query_bytes(&self, sql: &str, params: Vec<Value>) -> Result<Vec<u8>> {
-        let shared = self.query_bytes_shared(sql, params).await?;
-        Ok(Arc::try_unwrap(shared).unwrap_or_else(|arc| arc.as_ref().clone()))
     }
 
     async fn with_conn<T, F>(&self, f: F) -> Result<T>
