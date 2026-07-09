@@ -1,6 +1,6 @@
-# NCB — Ncode Columnar Buffer (v1)
+# PCB — Powder Columnar Buffer (v1)
 
-NCB is the on-the-wire, zero-copy columnar format Ncode uses to move query
+PCB is the on-the-wire, zero-copy columnar format Powder uses to move query
 results out of the Rust core and into a host language. It is intentionally
 Arrow-shaped (validity bitmaps + type-specific data buffers) but far smaller in
 scope, so a reader can be written in ~120 lines in any language.
@@ -23,7 +23,7 @@ what lets a reader alias numeric buffers as `Float64Array` / `BigInt64Array`
 
 | Offset | Size | Field              | Notes                     |
 | ------ | ---- | ------------------ | ------------------------- |
-| 0      | 4    | `magic`            | ASCII `NCB1`              |
+| 0      | 4    | `magic`            | ASCII `PCB1`              |
 | 4      | 2    | `version`          | `1`                       |
 | 6      | 2    | `flags`            | reserved, `0`             |
 | 8      | 4    | `num_columns`      |                           |

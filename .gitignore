@@ -22,4 +22,8 @@ __pycache__/
 
 # Examples (compiled output)
 examples/powder-demo/*.js
+
+# Java binding build output
+crates/powder-java/out/
+*.class
 docs/

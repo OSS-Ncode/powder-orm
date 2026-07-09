@@ -16,5 +16,12 @@
         "title": { "type": "text" }
       }
     }
+  },
+  "queries": {
+    "topUsers": {
+      "sql": "SELECT id, name, score, active FROM users WHERE active = :active AND score >= :minScore ORDER BY score DESC",
+      "params": { "active": "bool", "minScore": "float" },
+      "returns": "users"
+    }
   }
 }

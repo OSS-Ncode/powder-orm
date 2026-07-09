@@ -12,7 +12,7 @@
  * Run: npx tsc -p tsconfig.json && node demo.js
  */
 
-import { Client } from "../../crates/ncode-node/dist/index.js";
+import { Client } from "../../crates/powder-node/dist/index.js";
 import { powder } from "./models.js";
 
 async function main() {
@@ -40,7 +40,7 @@ async function main() {
     ]);
   });
 
-  // Relations: include batch-loads the FK target and attaches it.
+  // belongsTo via include (2 queries) or a single LEFT JOIN — same result.
   const posts = await db.posts.findMany({
     include: { user: true },
     orderBy: { id: "asc" },
@@ -48,21 +48,50 @@ async function main() {
   for (const post of posts) {
     console.log(`#${post.id} "${post.title}" — by ${post.user?.name ?? "?"}`);
   }
+  const joined = await db.posts.findMany({ join: { user: true }, orderBy: { id: "asc" } });
+  console.log("via JOIN:", joined.map((p) => `${p.title}/${p.user?.name}`).join(", "));
 
-  const active = await db.users.findMany({
-    where: { active: true, score: { gte: 5 } },
-    orderBy: { score: "desc" },
+  // hasMany reverse relation: each user's posts.
+  const authors = await db.users.findMany({ include: { posts: true }, orderBy: { id: "asc" } });
+  for (const u of authors) {
+    console.log(`${u.name} wrote: [${(u.posts ?? []).map((p) => p.title).join(", ")}]`);
+  }
+
+  // Nested transactions: inner rolls back via savepoint, outer commits.
+  await db.$transaction(async (tx) => {
+    await tx.users.create({ id: 4, name: "dave", score: 3, active: true });
+    await tx
+      .$transaction(async (inner) => {
+        await inner.posts.create({ id: 4, user_id: 4, title: "draft" });
+        throw new Error("discard draft");
+      })
+      .catch(() => {});
   });
+  console.log("after nested tx — users:", await db.users.count(), "posts:", await db.posts.count());
+
+  // Beginner-friendly: find() by primary key, and a chainable query.
+  console.log("find(2):", (await db.users.find(2))?.name);
+  const active = await db.users
+    .where({ active: true })
+    .where({ score: { gte: 5 } })
+    .orderBy("score", "desc")
+    .all();
   console.log("active high scorers:", active.map((u) => u.name));
 
-  // A failing transaction rolls back completely.
-  await db
-    .$transaction(async (tx) => {
-      await tx.users.create({ id: 4, name: "dave", score: 1, active: true });
-      throw new Error("changed my mind");
-    })
-    .catch(() => {});
-  console.log("users after rollback:", await db.users.count());
+  // Custom named query from powder.schema.json — SQL compiled at generate time.
+  const top = await db.$queries.topUsers({ active: true, minScore: 5 });
+  console.log("named query topUsers:", top.map((u) => `${u.name}(${u.score})`).join(", "));
+
+  // Nested include: post -> its author -> that author's posts.
+  const deep = await db.posts.findMany({
+    include: { user: { include: { posts: true } } },
+    orderBy: { id: "asc" },
+    limit: 1,
+  });
+  console.log(
+    `nested include: post "${deep[0].title}" by ${deep[0].user?.name},`,
+    `who wrote ${deep[0].user?.posts?.length} posts`,
+  );
 
   // Click-to-jump: the PowderError below points at THIS file and line.
   try {

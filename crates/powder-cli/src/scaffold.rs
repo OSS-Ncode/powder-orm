@@ -30,7 +30,7 @@ const PACKAGE_JSON: &str = r#"{
     "start": "node src/main.js"
   },
   "dependencies": {
-    "@ncode/node": "*"
+    "@powder/node": "*"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
@@ -50,13 +50,23 @@ const TSCONFIG_JSON: &str = r#"{
 }
 "#;
 
-const MAIN_TS: &str = r#"import { Client } from "@ncode/node";
+const MAIN_TS: &str = r#"import { Client } from "@powder/node";
 import { powder } from "./models.js";
 
 const client = await Client.connect("app.db");
 const db = powder(client);
 
-// Typed CRUD with relations:
+// Simple lookups: by primary key, or chain filters step by step.
+console.log("user 1:", (await db.users.find(1))?.name);
+
+const top = await db.users
+  .where({ active: true })
+  .orderBy("score", "desc")
+  .limit(5)
+  .all();
+console.log("top users:", top.map((u) => u.name));
+
+// Relations are loaded in one extra query each — no N+1.
 const posts = await db.posts.findMany({
   include: { user: true },
   orderBy: { id: "asc" },
@@ -65,7 +75,11 @@ for (const post of posts) {
   console.log(`#${post.id} ${post.title} — by ${post.user?.name ?? "?"}`);
 }
 
-// Transactions roll back automatically on throw:
+// Custom named queries live in powder.schema.json; their SQL is compiled
+// when you run `powder generate`.
+console.log("topUsers:", await db.$queries.topUsers({ active: true, minScore: 5 }));
+
+// Transactions roll back automatically on throw (nested ones use savepoints).
 await db.$transaction(async (tx) => {
   await tx.users.create({ id: 3, name: "carol", score: 7.5, active: true });
   await tx.posts.create({ id: 3, user_id: 3, title: "carol's post" });
@@ -108,7 +122,7 @@ pub fn scaffold(dir: &str) -> Result<Vec<String>, String> {
         (".gitignore", GITIGNORE.to_string()),
         ("README.md", README.to_string()),
         ("src/main.ts", MAIN_TS.to_string()),
-        ("src/models.ts", codegen::typescript(&schema, "@ncode/node")),
+        ("src/models.ts", codegen::typescript(&schema, "@powder/node")),
     ];
 
     let mut written = Vec::with_capacity(files.len());

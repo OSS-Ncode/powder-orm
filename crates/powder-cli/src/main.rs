@@ -10,7 +10,7 @@
 
 use std::process::ExitCode;
 
-use powder_cli::{codegen, db, scaffold, schema::Schema, schema::SAMPLE_SCHEMA};
+use powder_cli::{codegen, db, dialect, scaffold, schema::Schema, schema::SAMPLE_SCHEMA};
 
 const USAGE: &str = "\
 powder — Powder ORM CLI
@@ -19,6 +19,7 @@ USAGE:
   powder new <dir>                              # scaffold a new Powder project
   powder init
   powder generate [--schema powder.schema.json] [--ts <out.ts>] [--py <out.py>] [--ts-import <module>]
+  powder ddl      [--schema powder.schema.json] [--dialect sqlite|postgres]
   powder migrate  --db <url> [--schema powder.schema.json] [--rebuild]
   powder validate --db <url> [--schema powder.schema.json]
   powder seed     --db <url> --file <seed.json|seed.sql>
@@ -26,8 +27,9 @@ USAGE:
 `migrate` is additive (CREATE TABLE / ADD COLUMN). With --rebuild, tables
 whose live shape drifted destructively (dropped columns, type or key changes)
 are rebuilt in place, preserving data in surviving columns.
+`ddl` prints CREATE TABLE statements for the chosen dialect (default sqlite).
 
-Database URLs accept the same forms as the Ncode client:
+Database URLs accept the same forms as the Powder client:
   sqlite::memory: | sqlite://path/to.db | path/to.db
 ";
 
@@ -72,7 +74,7 @@ fn run() -> Result<(), String> {
             let schema = load_schema(&args)?;
             let mut wrote = false;
             if let Some(ts_out) = flag(&args, "--ts") {
-                let import = flag(&args, "--ts-import").unwrap_or_else(|| "@ncode/node".into());
+                let import = flag(&args, "--ts-import").unwrap_or_else(|| "@powder/node".into());
                 std::fs::write(&ts_out, codegen::typescript(&schema, &import))
                     .map_err(|e| e.to_string())?;
                 println!("wrote {ts_out}");
@@ -85,6 +87,15 @@ fn run() -> Result<(), String> {
             }
             if !wrote {
                 return Err("generate: pass --ts <out.ts> and/or --py <out.py>".into());
+            }
+            Ok(())
+        }
+        Some("ddl") => {
+            let schema = load_schema(&args)?;
+            let name = flag(&args, "--dialect").unwrap_or_else(|| "sqlite".into());
+            let d = dialect::by_name(&name)?;
+            for table in schema.tables_in_dependency_order() {
+                println!("{};", d.create_table(table));
             }
             Ok(())
         }

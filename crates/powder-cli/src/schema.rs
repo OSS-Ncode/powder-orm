@@ -7,7 +7,7 @@
 use serde::Deserialize;
 use serde_json::Map;
 
-/// Logical column types. Deliberately the NCB type set: what the wire format
+/// Logical column types. Deliberately the PCB type set: what the wire format
 /// can carry zero-copy is exactly what a model may declare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -82,15 +82,48 @@ pub struct Column {
     pub def: ColumnDef,
 }
 
+/// A normalized foreign key. Single-column `references` sugar and table-level
+/// `foreignKeys` (which may span multiple columns) both reduce to this.
+#[derive(Debug, Clone)]
+pub struct ForeignKey {
+    /// Local columns, in order.
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    /// Referenced columns, same arity/order as `columns`.
+    pub ref_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Table {
     pub name: String,
     pub columns: Vec<Column>,
+    /// All foreign keys (per-column + table-level), normalized.
+    pub foreign_keys: Vec<ForeignKey>,
+}
+
+/// A custom named query declared in the schema. The `:name` placeholders are
+/// compiled to positional `?` at parse time (AOT); `param_order` records which
+/// declared parameter feeds each positional slot, in order (a parameter may
+/// appear more than once).
+#[derive(Debug, Clone)]
+pub struct NamedQuery {
+    pub name: String,
+    /// Original SQL with `:name` placeholders (for docs/comments).
+    pub source_sql: String,
+    /// Compiled SQL with positional `?` placeholders.
+    pub sql: String,
+    /// Declared parameters `(name, type)` in declaration order.
+    pub params: Vec<(String, ColumnType)>,
+    /// Parameter name per positional `?`, in order of appearance.
+    pub param_order: Vec<String>,
+    /// Optional table whose row shape the query returns (typed rows).
+    pub returns: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Schema {
     pub tables: Vec<Table>,
+    pub queries: Vec<NamedQuery>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +133,77 @@ struct RawSchema {
     #[allow(dead_code)]
     database: Option<String>,
     tables: Map<String, serde_json::Value>,
+    #[serde(default)]
+    queries: Map<String, serde_json::Value>,
+}
+
+/// Compile `:name` placeholders to positional `?`, recording the parameter
+/// order. Skips single-quoted string literals and the `::` operator; every
+/// placeholder must be declared and every declared parameter must be used.
+fn compile_named_sql(
+    qname: &str,
+    sql: &str,
+    declared: &[(String, ColumnType)],
+) -> Result<(String, Vec<String>), String> {
+    let bytes = sql.as_bytes();
+    // Byte-wise copy keeps multi-byte UTF-8 intact; only ASCII `?` is inserted.
+    let mut out: Vec<u8> = Vec::with_capacity(sql.len());
+    let mut order: Vec<String> = Vec::new();
+    let mut i = 0;
+    let mut in_str = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            out.push(c);
+            if c == b'\'' {
+                in_str = false; // '' escapes toggle out/in and stay literal
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\'' => {
+                in_str = true;
+                out.push(c);
+                i += 1;
+            }
+            b':' if i + 1 < bytes.len() && bytes[i + 1] == b':' => {
+                out.extend_from_slice(b"::"); // cast operator, not a placeholder
+                i += 2;
+            }
+            b':' if i + 1 < bytes.len()
+                && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_') =>
+            {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                let name = &sql[start..end];
+                if !declared.iter().any(|(p, _)| p == name) {
+                    return Err(format!(
+                        "query `{qname}`: placeholder `:{name}` is not declared in params"
+                    ));
+                }
+                out.push(b'?');
+                order.push(name.to_string());
+                i = end;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    for (p, _) in declared {
+        if !order.iter().any(|o| o == p) {
+            return Err(format!("query `{qname}`: declared param `{p}` is never used"));
+        }
+    }
+    let out = String::from_utf8(out).expect("verbatim copy of valid UTF-8 stays valid");
+    Ok((out, order))
 }
 
 /// A simple identifier: what Powder allows for table/column names. Everything
@@ -124,8 +228,22 @@ impl Schema {
             }
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
+            struct RawCompRef {
+                table: String,
+                columns: Vec<String>,
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct RawForeignKey {
+                columns: Vec<String>,
+                references: RawCompRef,
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
             struct RawTable {
                 columns: Map<String, serde_json::Value>,
+                #[serde(default, rename = "foreignKeys")]
+                foreign_keys: Vec<RawForeignKey>,
             }
             let rt: RawTable = serde_json::from_value(tval)
                 .map_err(|e| format!("table `{tname}`: {e}"))?;
@@ -133,6 +251,7 @@ impl Schema {
                 return Err(format!("table `{tname}`: has no columns"));
             }
             let mut columns = Vec::with_capacity(rt.columns.len());
+            let mut foreign_keys = Vec::new();
             for (cname, cval) in rt.columns {
                 if !is_ident(&cname) {
                     return Err(format!("table `{tname}`: column `{cname}` is not a valid identifier"));
@@ -150,48 +269,128 @@ impl Schema {
                             "table `{tname}`, column `{cname}`: reference target is not a valid identifier"
                         ));
                     }
+                    foreign_keys.push(ForeignKey {
+                        columns: vec![cname.clone()],
+                        ref_table: r.table.clone(),
+                        ref_columns: vec![r.column.clone()],
+                    });
                 }
                 columns.push(Column { name: cname, def });
             }
-            tables.push(Table { name: tname, columns });
+            // Table-level (possibly composite) foreign keys.
+            for fk in rt.foreign_keys {
+                if fk.columns.is_empty() || fk.columns.len() != fk.references.columns.len() {
+                    return Err(format!(
+                        "table `{tname}`: foreignKeys entry must list an equal, non-zero number of local and referenced columns"
+                    ));
+                }
+                if !is_ident(&fk.references.table)
+                    || fk.columns.iter().chain(&fk.references.columns).any(|c| !is_ident(c))
+                {
+                    return Err(format!(
+                        "table `{tname}`: foreignKeys entry has an invalid identifier"
+                    ));
+                }
+                foreign_keys.push(ForeignKey {
+                    columns: fk.columns,
+                    ref_table: fk.references.table,
+                    ref_columns: fk.references.columns,
+                });
+            }
+            tables.push(Table {
+                name: tname,
+                columns,
+                foreign_keys,
+            });
         }
         if tables.is_empty() {
             return Err("schema has no tables".into());
         }
-        let schema = Schema { tables };
+
+        // Custom named queries: `:name` placeholders compile to `?` up front.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawQuery {
+            sql: String,
+            #[serde(default)]
+            params: Map<String, serde_json::Value>,
+            #[serde(default)]
+            returns: Option<String>,
+        }
+        let mut queries = Vec::with_capacity(raw.queries.len());
+        for (qname, qval) in raw.queries {
+            if !is_ident(&qname) {
+                return Err(format!("query `{qname}`: not a valid identifier"));
+            }
+            let rq: RawQuery = serde_json::from_value(qval)
+                .map_err(|e| format!("query `{qname}`: {e}"))?;
+            let mut params: Vec<(String, ColumnType)> = Vec::with_capacity(rq.params.len());
+            for (pname, pval) in rq.params {
+                if !is_ident(&pname) {
+                    return Err(format!("query `{qname}`: param `{pname}` is not a valid identifier"));
+                }
+                let ptype: ColumnType = serde_json::from_value(pval)
+                    .map_err(|e| format!("query `{qname}`, param `{pname}`: {e}"))?;
+                params.push((pname, ptype));
+            }
+            if let Some(ret) = &rq.returns {
+                if !tables.iter().any(|t| &t.name == ret) {
+                    return Err(format!(
+                        "query `{qname}`: returns unknown table `{ret}`"
+                    ));
+                }
+            }
+            let (sql, param_order) = compile_named_sql(&qname, &rq.sql, &params)?;
+            queries.push(NamedQuery {
+                name: qname,
+                source_sql: rq.sql,
+                sql,
+                params,
+                param_order,
+                returns: rq.returns,
+            });
+        }
+
+        let schema = Schema { tables, queries };
         schema.check_references()?;
         Ok(schema)
     }
 
-    /// Every `references` must point at an existing table + column, and the
-    /// referenced column must be that table's (single) primary key or at
-    /// least exist. Composite keys may be referenced column-by-column.
+    /// Every foreign key (single or composite) must point at an existing
+    /// table and columns, with matching arity and per-position column types.
     fn check_references(&self) -> Result<(), String> {
         for table in &self.tables {
-            for col in &table.columns {
-                let Some(r) = &col.def.references else { continue };
-                let Some(target) = self.tables.iter().find(|t| t.name == r.table) else {
+            for fk in &table.foreign_keys {
+                let Some(target) = self.tables.iter().find(|t| t.name == fk.ref_table) else {
                     return Err(format!(
-                        "table `{}`, column `{}`: references unknown table `{}`",
-                        table.name, col.name, r.table
+                        "table `{}`: foreign key references unknown table `{}`",
+                        table.name, fk.ref_table
                     ));
                 };
-                let Some(tcol) = target.columns.iter().find(|c| c.name == r.column) else {
-                    return Err(format!(
-                        "table `{}`, column `{}`: references unknown column `{}.{}`",
-                        table.name, col.name, r.table, r.column
-                    ));
-                };
-                if tcol.def.column_type != col.def.column_type {
-                    return Err(format!(
-                        "table `{}`, column `{}`: type `{}` does not match referenced `{}.{}` type `{}`",
-                        table.name,
-                        col.name,
-                        col.def.column_type.name(),
-                        r.table,
-                        r.column,
-                        tcol.def.column_type.name()
-                    ));
+                for (local, refc) in fk.columns.iter().zip(&fk.ref_columns) {
+                    let Some(lcol) = table.columns.iter().find(|c| &c.name == local) else {
+                        return Err(format!(
+                            "table `{}`: foreign key uses unknown local column `{}`",
+                            table.name, local
+                        ));
+                    };
+                    let Some(tcol) = target.columns.iter().find(|c| &c.name == refc) else {
+                        return Err(format!(
+                            "table `{}`: foreign key references unknown column `{}.{}`",
+                            table.name, fk.ref_table, refc
+                        ));
+                    };
+                    if tcol.def.column_type != lcol.def.column_type {
+                        return Err(format!(
+                            "table `{}`, column `{}`: type `{}` does not match referenced `{}.{}` type `{}`",
+                            table.name,
+                            local,
+                            lcol.def.column_type.name(),
+                            fk.ref_table,
+                            refc,
+                            tcol.def.column_type.name()
+                        ));
+                    }
                 }
             }
         }
@@ -206,11 +405,8 @@ impl Schema {
         while !remaining.is_empty() {
             let before = placed.len();
             remaining.retain(|t| {
-                let deps_ok = t.columns.iter().all(|c| match &c.def.references {
-                    Some(r) => {
-                        r.table == t.name || placed.iter().any(|p| p.name == r.table)
-                    }
-                    None => true,
+                let deps_ok = t.foreign_keys.iter().all(|fk| {
+                    fk.ref_table == t.name || placed.iter().any(|p| p.name == fk.ref_table)
                 });
                 if deps_ok {
                     placed.push(t);
@@ -259,6 +455,13 @@ pub const SAMPLE_SCHEMA: &str = r#"{
         "user_id": { "type": "int", "references": { "table": "users", "column": "id" } },
         "title": { "type": "text" }
       }
+    }
+  },
+  "queries": {
+    "topUsers": {
+      "sql": "SELECT id, name, score, active FROM users WHERE active = :active AND score >= :minScore ORDER BY score DESC",
+      "params": { "active": "bool", "minScore": "float" },
+      "returns": "users"
     }
   }
 }
@@ -319,6 +522,54 @@ mod tests {
                 "u":{"columns":{"id":{"type":"int","primaryKey":true}}},
                 "t":{"columns":{"x":{"type":"text","references":{"table":"u","column":"id"}}}}
             }}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn named_queries_compile_placeholders_aot() {
+        let schema = Schema::parse(SAMPLE_SCHEMA).unwrap();
+        assert_eq!(schema.queries.len(), 1);
+        let q = &schema.queries[0];
+        assert_eq!(q.name, "topUsers");
+        assert_eq!(
+            q.sql,
+            "SELECT id, name, score, active FROM users WHERE active = ? AND score >= ? ORDER BY score DESC"
+        );
+        assert_eq!(q.param_order, ["active", "minScore"]);
+        assert_eq!(q.returns.as_deref(), Some("users"));
+
+        // A param used twice binds twice, in order.
+        let s = Schema::parse(
+            r#"{"tables":{"t":{"columns":{"a":{"type":"int"}}}},
+                "queries":{"q":{"sql":"SELECT a FROM t WHERE a > :x OR a < :x","params":{"x":"int"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.queries[0].param_order, ["x", "x"]);
+
+        // `:name` inside a string literal and `::` casts stay untouched.
+        let s2 = Schema::parse(
+            r#"{"tables":{"t":{"columns":{"a":{"type":"text"}}}},
+                "queries":{"q":{"sql":"SELECT ':notaparam' AS lit, a FROM t WHERE a = :v","params":{"v":"text"}}}}"#,
+        )
+        .unwrap();
+        assert!(s2.queries[0].sql.contains("':notaparam'"), "{}", s2.queries[0].sql);
+        assert_eq!(s2.queries[0].param_order, ["v"]);
+
+        // Undeclared placeholder, unused param, unknown returns table -> errors.
+        assert!(Schema::parse(
+            r#"{"tables":{"t":{"columns":{"a":{"type":"int"}}}},
+                "queries":{"q":{"sql":"SELECT :ghost","params":{}}}}"#
+        )
+        .is_err());
+        assert!(Schema::parse(
+            r#"{"tables":{"t":{"columns":{"a":{"type":"int"}}}},
+                "queries":{"q":{"sql":"SELECT 1","params":{"x":"int"}}}}"#
+        )
+        .is_err());
+        assert!(Schema::parse(
+            r#"{"tables":{"t":{"columns":{"a":{"type":"int"}}}},
+                "queries":{"q":{"sql":"SELECT 1","params":{},"returns":"nope"}}}"#
         )
         .is_err());
     }

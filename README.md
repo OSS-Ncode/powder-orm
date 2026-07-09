@@ -1,4 +1,4 @@
-# Ncode
+# Powder
 
 A high-performance database engine with a **Rust core** that returns query
 results in a **zero-copy, Apache-Arrow-style columnar binary format**, exposed
@@ -7,15 +7,15 @@ to **TypeScript** (napi-rs) and **Python** (PyO3) through idiomatic, fully
 
 ```
           ┌────────────────────────────────────────────┐
-          │            ncode-core  (Rust)               │
+          │            powder-core  (Rust)               │
           │  Client · Query builder · RecordBatch        │
-          │  NCB columnar codec (zero-copy)              │
+          │  PCB columnar codec (zero-copy)              │
           │  async engine (Tokio) → rusqlite backend     │
           └───────────────┬───────────────┬─────────────┘
                           │               │
               napi-rs     │               │   PyO3 + pyo3-async-runtimes
          ┌────────────────▼──┐         ┌──▼──────────────────┐
-         │   @ncode/node     │         │      ncode (py)      │
+         │   @powder/node     │         │      powder (py)      │
          │  Promise · TS      │         │  asyncio · typing    │
          │  typed-array reader│         │  memoryview reader   │
          └────────────────────┘         └──────────────────────┘
@@ -24,8 +24,8 @@ to **TypeScript** (napi-rs) and **Python** (PyO3) through idiomatic, fully
 ## Why
 
 Moving relational result sets across a language boundary usually means
-serializing to JSON or building millions of host-language objects. Ncode
-instead moves **one contiguous columnar buffer** (the *NCB* format) and lets the
+serializing to JSON or building millions of host-language objects. Powder
+instead moves **one contiguous columnar buffer** (the *PCB* format) and lets the
 host language build typed-array / `memoryview` views straight over those bytes —
 so a `Float64Array` in Node or a `memoryview.cast('d')` in Python reads the
 engine's output with **no per-value copy**.
@@ -34,18 +34,18 @@ engine's output with **no per-value copy**.
 
 | Crate / package        | Role                                                        |
 | ---------------------- | ----------------------------------------------------------- |
-| `crates/ncode-core`    | Rust core: async client, query builder, NCB codec           |
-| `crates/ncode-node`    | napi-rs binding + TypeScript wrapper (`@ncode/node`)         |
-| `crates/ncode-python`  | PyO3 binding + pure-Python wrapper (`ncode`)                 |
+| `crates/powder-core`    | Rust core: async client, query builder, PCB codec           |
+| `crates/powder-node`    | napi-rs binding + TypeScript wrapper (`@powder/node`)         |
+| `crates/powder-python`  | PyO3 binding + pure-Python wrapper (`powder`)                 |
 
 The wire format is specified in [`docs/FORMAT.md`](docs/FORMAT.md).
 
 ## Rust
 
 ```rust
-use ncode_core::{Client, query::Query, query::Order};
+use powder_core::{Client, query::Query, query::Order};
 
-# async fn demo() -> ncode_core::Result<()> {
+# async fn demo() -> powder_core::Result<()> {
 let db = Client::connect("sqlite::memory:").await?;
 db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL)", vec![]).await?;
 db.execute(
@@ -67,13 +67,13 @@ println!("first name = {:?}", batch.column("name").unwrap().str(0));
 ```
 
 ```bash
-cargo test -p ncode-core        # runs the core unit + integration tests
+cargo test -p powder-core        # runs the core unit + integration tests
 ```
 
 ## Node.js / TypeScript
 
 ```ts
-import { Client, Query } from "@ncode/node";
+import { Client, Query } from "@powder/node";
 
 const db = await Client.connect("sqlite::memory:");
 await db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL)");
@@ -92,7 +92,7 @@ console.log(batch.toRows());                  // [{ id: 1n, name: "alice", score
 Build the native addon + types:
 
 ```bash
-cd crates/ncode-node
+cd crates/powder-node
 npm install
 npm run build        # napi build --release && tsc
 ```
@@ -100,15 +100,15 @@ npm run build        # napi build --release && tsc
 ## Python
 
 ```python
-import asyncio, ncode
+import asyncio, powder
 
 async def main():
-    db = await ncode.connect("sqlite::memory:")
+    db = await powder.connect("sqlite::memory:")
     await db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL)")
     await db.execute("INSERT INTO users VALUES (?, ?, ?)", [1, "alice", 9.5])
 
     batch = await db.run(
-        ncode.Query.table("users").select("id", "name", "score").filter("score > ?", 5)
+        powder.Query.table("users").select("id", "name", "score").filter("score > ?", 5)
     )
     # Zero-copy memoryview over the engine's output buffer:
     print(batch.column("score").get(0))   # 9.5
@@ -120,10 +120,10 @@ asyncio.run(main())
 Build & install the extension:
 
 ```bash
-cd crates/ncode-python
+cd crates/powder-python
 python -m venv .venv && source .venv/bin/activate
 pip install maturin
-maturin develop          # builds the Rust extension and installs `ncode`
+maturin develop          # builds the Rust extension and installs `powder`
 ```
 
 ## Supported types

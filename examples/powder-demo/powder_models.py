@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
-from ncode import Client
-from ncode.orm import ColumnMeta, PowderTable, RelationMeta, TableMeta
+from powder import Client
+from powder.orm import ColumnMeta, PowderTable, RelationMeta, TableMeta, run_named_query
 
 @dataclass(kw_only=True)
 class Users:
@@ -17,6 +17,8 @@ class Users:
     name: str
     score: Optional[float] = None
     active: bool
+    # Loaded via include={"posts": True}.
+    posts: List[Posts] = field(default_factory=list)
 
 USERS_META = TableMeta(
     table="users",
@@ -36,6 +38,9 @@ USERS_META = TableMeta(
         "score": "score",
         "active": "active",
     },
+    relations=(
+        RelationMeta(name="posts", kind="hasMany", local_columns=["id"], foreign_columns=["user_id"], target=lambda: POSTS_META),
+    ),
 )
 
 @dataclass(kw_only=True)
@@ -65,7 +70,7 @@ POSTS_META = TableMeta(
         "title": "title",
     },
     relations=(
-        RelationMeta(name="user", local_column="user_id", foreign_column="id", target=lambda: USERS_META),
+        RelationMeta(name="user", kind="belongsTo", local_columns=["user_id"], foreign_columns=["id"], target=lambda: USERS_META),
     ),
 )
 
@@ -74,6 +79,16 @@ _ROW_TYPES = {
     "posts": Posts,
 }
 
+class PowderQueries:
+    """Custom named queries from powder.schema.json (SQL compiled at generation time)."""
+
+    def __init__(self, client: Client):
+        self._client = client
+
+    async def topUsers(self, *, active: bool, minScore: float) -> list[Users]:
+        """``SELECT id, name, score, active FROM users WHERE active = :active AND score >= :minScore ORDER BY score DESC``"""
+        return await run_named_query(self._client, "SELECT id, name, score, active FROM users WHERE active = ? AND score >= ? ORDER BY score DESC", ["active", "minScore"], {"active": active, "minScore": minScore}, meta=USERS_META, row_type=Users)
+
 class PowderClient:
     """The unified Powder client: one typed handle per table."""
 
@@ -81,11 +96,13 @@ class PowderClient:
         self._client = client
         self.users = PowderTable(client, USERS_META, Users, row_types=_ROW_TYPES)
         self.posts = PowderTable(client, POSTS_META, Posts, row_types=_ROW_TYPES)
+        #: Custom named queries: ``await db.queries.name(...)``.
+        self.queries = PowderQueries(client)
 
     def transaction(self):
         """``async with db.transaction(): ...`` — commit on exit, rollback on error."""
         return self._client.transaction()
 
 def powder(client: Client) -> PowderClient:
-    """Wrap a connected Ncode client with the Powder model layer."""
+    """Wrap a connected Powder client with the Powder model layer."""
     return PowderClient(client)

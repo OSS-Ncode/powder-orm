@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::dialect::{SqlDialect, Sqlite};
 use crate::schema::{Schema, Table};
 
-/// Open a connection using the same URL forms the Ncode client accepts.
+/// Open a connection using the same URL forms the Powder client accepts.
 pub fn open(url: &str) -> Result<Connection, String> {
     let conn = if url == ":memory:" || url == "sqlite::memory:" {
         Connection::open_in_memory()
@@ -54,30 +54,59 @@ fn introspect(conn: &Connection, table: &str) -> Result<Vec<DbColumn>, String> {
     Ok(cols)
 }
 
-/// One foreign key as reported by `PRAGMA foreign_key_list`.
+/// One foreign key as reported by `PRAGMA foreign_key_list`, with composite
+/// keys grouped: SQLite emits one row per column sharing an `id`, ordered by
+/// `seq`.
 struct DbForeignKey {
-    from: String,
+    from: Vec<String>,
     table: String,
-    to: String,
+    to: Vec<String>,
 }
 
 fn introspect_fks(conn: &Connection, table: &str) -> Result<Vec<DbForeignKey>, String> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA foreign_key_list({table})"))
         .map_err(|e| e.to_string())?;
-    let fks = stmt
+    // Columns: id, seq, table, from, to, on_update, on_delete, match.
+    struct Row {
+        id: i64,
+        seq: i64,
+        table: String,
+        from: String,
+        to: Option<String>,
+    }
+    let mut rows = stmt
         .query_map([], |row| {
-            Ok(DbForeignKey {
-                table: row.get::<_, String>(2)?,
-                from: row.get::<_, String>(3)?,
-                // `to` is NULL when the FK references the implicit PK.
-                to: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            Ok(Row {
+                id: row.get(0)?,
+                seq: row.get(1)?,
+                table: row.get(2)?,
+                from: row.get(3)?,
+                to: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(fks)
+    // Group by id, order each group by seq.
+    rows.sort_by(|a, b| a.id.cmp(&b.id).then(a.seq.cmp(&b.seq)));
+    let mut out: Vec<DbForeignKey> = Vec::new();
+    let mut cur_id: Option<i64> = None;
+    for r in rows {
+        if cur_id != Some(r.id) {
+            cur_id = Some(r.id);
+            out.push(DbForeignKey {
+                from: Vec::new(),
+                table: r.table.clone(),
+                to: Vec::new(),
+            });
+        }
+        let fk = out.last_mut().unwrap();
+        fk.from.push(r.from);
+        // `to` is NULL when the FK references the implicit primary key.
+        fk.to.push(r.to.unwrap_or_default());
+    }
+    Ok(out)
 }
 
 /// Apply the schema to the database: create missing tables (in dependency
@@ -129,6 +158,7 @@ pub fn migrate_rebuild(conn: &Connection, schema: &Schema) -> Result<Vec<String>
             let tmp_table = Table {
                 name: tmp.clone(),
                 columns: table.columns.clone(),
+                foreign_keys: table.foreign_keys.clone(),
             };
             // Common columns copy straight over; NOT NULL columns absent from
             // the old shape (or nullable there) are backfilled with a
@@ -264,27 +294,33 @@ fn check_foreign_keys(
     problems: &mut Vec<String>,
 ) -> Result<(), String> {
     let db_fks = introspect_fks(conn, &table.name)?;
-    for col in &table.columns {
-        let Some(r) = &col.def.references else { continue };
-        let found = db_fks
-            .iter()
-            .any(|f| f.from == col.name && f.table == r.table && (f.to == r.column || f.to.is_empty()));
-        if !found {
+    // A DB foreign key matches a schema one when the local columns, target
+    // table, and referenced columns all agree (in order). `to` is empty when
+    // SQLite defaulted to the referenced table's primary key.
+    let matches = |schema: &crate::schema::ForeignKey, db: &DbForeignKey| {
+        schema.columns == db.from
+            && schema.ref_table == db.table
+            && (db.to.iter().all(|s| s.is_empty()) || schema.ref_columns == db.to)
+    };
+    for fk in &table.foreign_keys {
+        if !db_fks.iter().any(|db| matches(fk, db)) {
             problems.push(format!(
-                "table `{}`, column `{}`: foreign key to `{}.{}` missing from database",
-                table.name, col.name, r.table, r.column
+                "table `{}`: foreign key ({}) -> `{}`({}) missing from database",
+                table.name,
+                fk.columns.join(", "),
+                fk.ref_table,
+                fk.ref_columns.join(", ")
             ));
         }
     }
-    for f in &db_fks {
-        let declared = table
-            .columns
-            .iter()
-            .any(|c| c.name == f.from && c.def.references.is_some());
-        if !declared {
+    for db in &db_fks {
+        if !table.foreign_keys.iter().any(|fk| matches(fk, db)) {
             problems.push(format!(
-                "table `{}`: database has extra foreign key `{}` -> `{}.{}` not in schema",
-                table.name, f.from, f.table, f.to
+                "table `{}`: database has extra foreign key ({}) -> `{}`({}) not in schema",
+                table.name,
+                db.from.join(", "),
+                db.table,
+                db.to.join(", ")
             ));
         }
     }
@@ -419,7 +455,57 @@ mod tests {
         )
         .unwrap();
         let problems = validate(&bare, &sample()).unwrap();
-        assert!(problems.iter().any(|p| p.contains("foreign key to `users.id` missing")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("foreign key") && p.contains("missing from database")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn composite_foreign_key_migrates_validates_and_enforces() {
+        let schema = Schema::parse(
+            r#"{"tables":{
+                "orders":{"columns":{
+                    "id":{"type":"int","primaryKey":true},
+                    "year":{"type":"int","primaryKey":true}
+                }},
+                "line_items":{
+                    "columns":{
+                        "id":{"type":"int","primaryKey":true},
+                        "order_id":{"type":"int"},
+                        "order_year":{"type":"int"}
+                    },
+                    "foreignKeys":[
+                        {"columns":["order_id","order_year"],"references":{"table":"orders","columns":["id","year"]}}
+                    ]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        let applied = migrate(&conn, &schema).unwrap();
+        // The composite FK is a table-level constraint in the DDL.
+        assert!(
+            applied.iter().any(|s| s.contains("FOREIGN KEY (order_id, order_year) REFERENCES orders(id, year)")),
+            "{applied:?}"
+        );
+        assert!(validate(&conn, &schema).unwrap().is_empty());
+
+        // The two-column FK is enforced by the database.
+        conn.execute_batch("INSERT INTO orders VALUES (1, 2026)").unwrap();
+        conn.execute_batch("INSERT INTO line_items VALUES (1, 1, 2026)").unwrap();
+        // Right id, wrong year -> no matching parent row -> rejected.
+        assert!(conn.execute_batch("INSERT INTO line_items VALUES (2, 1, 2025)").is_err());
+
+        // A DB missing the composite FK is drift.
+        let bare = Connection::open_in_memory().unwrap();
+        bare.execute_batch(
+            "CREATE TABLE orders (id INTEGER NOT NULL, year INTEGER NOT NULL, PRIMARY KEY (id, year));
+             CREATE TABLE line_items (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, order_year INTEGER NOT NULL)",
+        )
+        .unwrap();
+        assert!(!validate(&bare, &schema).unwrap().is_empty());
     }
 
     #[test]
