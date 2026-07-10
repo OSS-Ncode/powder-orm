@@ -1,0 +1,43 @@
+name: Commit Summary Feed
+
+# push된 각 커밋을 맥미니 셀프호스팅 러너에서 로컬 Ollama(DGX Spark)로
+# 요약해 docs-site의 실시간 커밋 피드(feed.json)에 append한다.
+# 이 워크플로우는 절대 push 자체를 막으면 안 된다 — 항상 성공으로 끝난다.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  summarize:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Summarize each pushed commit
+        env:
+          COMMITS_JSON: ${{ toJson(github.event.commits) }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+          echo "$COMMITS_JSON" | python3 -c '
+          import json, sys
+          for c in json.load(sys.stdin):
+              print(c["id"])
+          ' > /tmp/commit-shas.txt
+
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            short_sha="${sha:0:7}"
+            author=$(git log -1 --format=%an "$sha")
+            timestamp=$(git log -1 --format=%aI "$sha")
+            url="https://github.com/$REPO/commit/$sha"
+            git log -1 --format=%B "$sha" > /tmp/commit-msg.txt
+            git show "$sha" --stat --patch > /tmp/commit-diff.txt
+
+            python3 /Users/server/apps/commit-feed-append.py \
+              "$sha" "$short_sha" "$author" "$url" "$timestamp" \
+              /tmp/commit-msg.txt /tmp/commit-diff.txt
+            echo "processed $short_sha (exit $?)"
+          done < /tmp/commit-shas.txt
+
+          exit 0
