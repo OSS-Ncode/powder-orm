@@ -1,7 +1,6 @@
 import Link from 'next/link';
-import { ArrowRight, Boxes, Gauge, Heart, Mail, ShieldCheck, FileCode2, Layers } from 'lucide-react';
+import { ArrowRight, Boxes, Gauge, Heart, ShieldCheck, FileCode2, Layers } from 'lucide-react';
 import { gitConfig } from '@/lib/shared';
-import { SupportForm } from '@/components/support-form';
 
 // lucide-react (this version) ships no brand icons, so inline the GitHub mark.
 function GithubMark({ className }: { className?: string }) {
@@ -31,16 +30,6 @@ type Copy = {
   sponsorHeading: string;
   sponsorBody: string;
   sponsorCta: string;
-  supportHeading: string;
-  supportBody: string;
-  supportEmailLabel: string;
-  supportEmailPlaceholder: string;
-  supportMessageLabel: string;
-  supportMessagePlaceholder: string;
-  supportSubmit: string;
-  supportSubmitting: string;
-  supportSuccess: string;
-  supportError: string;
 };
 
 const GH = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
@@ -99,17 +88,6 @@ const copy: Record<string, Copy> = {
     sponsorBody:
       'Powder는 오픈소스로 개발되고 있어요. 후원은 코어 개발과 더 많은 언어·DB 지원에 큰 힘이 됩니다.',
     sponsorCta: '개발 후원하기',
-    supportHeading: '문의하기',
-    supportBody:
-      '궁금한 점이나 버그 제보, 무엇이든 아래로 남겨주세요. 입력하신 이메일로 답변드립니다.',
-    supportEmailLabel: '이메일',
-    supportEmailPlaceholder: 'you@example.com',
-    supportMessageLabel: '문의 내용',
-    supportMessagePlaceholder: '어떤 도움이 필요하신가요?',
-    supportSubmit: '보내기',
-    supportSubmitting: '보내는 중…',
-    supportSuccess: '문의가 접수됐어요. 곧 이메일로 답변드릴게요.',
-    supportError: '전송에 실패했어요. 잠시 후 다시 시도해주세요.',
   },
   en: {
     badge: 'Rust core · 9 languages · zero-copy',
@@ -163,17 +141,6 @@ const copy: Record<string, Copy> = {
     sponsorBody:
       'Powder is developed in the open. Sponsorship directly funds core development and broader language & database support.',
     sponsorCta: 'Sponsor the project',
-    supportHeading: 'Contact us',
-    supportBody:
-      "Questions, bug reports, anything — leave it below. We'll reply to the email you enter.",
-    supportEmailLabel: 'Email',
-    supportEmailPlaceholder: 'you@example.com',
-    supportMessageLabel: 'Message',
-    supportMessagePlaceholder: 'What do you need help with?',
-    supportSubmit: 'Send',
-    supportSubmitting: 'Sending…',
-    supportSuccess: "Your message is in. We'll reply by email soon.",
-    supportError: 'Something went wrong. Please try again in a moment.',
   },
   zh: {
     badge: 'Rust 内核 · 9 种语言 · 零拷贝',
@@ -226,16 +193,6 @@ const copy: Record<string, Copy> = {
     sponsorHeading: 'Powder 帮到你了吗？',
     sponsorBody: 'Powder 是开源项目。你的赞助将直接支持内核开发以及更多语言和数据库的支持。',
     sponsorCta: '赞助这个项目',
-    supportHeading: '联系我们',
-    supportBody: '有任何问题或 bug 反馈，请在下面留言，我们会回复到您填写的邮箱。',
-    supportEmailLabel: '邮箱',
-    supportEmailPlaceholder: 'you@example.com',
-    supportMessageLabel: '留言内容',
-    supportMessagePlaceholder: '需要什么帮助？',
-    supportSubmit: '发送',
-    supportSubmitting: '发送中…',
-    supportSuccess: '已收到您的留言，我们会尽快通过邮件回复。',
-    supportError: '发送失败，请稍后重试。',
   },
   ja: {
     badge: 'Rust コア · 9 言語 · ゼロコピー',
@@ -289,17 +246,6 @@ const copy: Record<string, Copy> = {
     sponsorBody:
       'Powder はオープンソースで開発されています。スポンサーはコア開発と、より多くの言語・DB サポートの大きな支えになります。',
     sponsorCta: '開発をスポンサーする',
-    supportHeading: 'お問い合わせ',
-    supportBody:
-      'ご質問やバグ報告など、なんでも下記からお送りください。入力されたメールアドレスに返信します。',
-    supportEmailLabel: 'メールアドレス',
-    supportEmailPlaceholder: 'you@example.com',
-    supportMessageLabel: 'お問い合わせ内容',
-    supportMessagePlaceholder: 'どのようなご用件でしょうか？',
-    supportSubmit: '送信',
-    supportSubmitting: '送信中…',
-    supportSuccess: 'お問い合わせを受け付けました。メールでご返信します。',
-    supportError: '送信に失敗しました。しばらくしてから再度お試しください。',
   },
 };
 
@@ -485,29 +431,6 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
             {t.sponsorCta}
           </a>
           <p className="mt-3 text-xs text-fd-muted-foreground">fairy.hada.io</p>
-        </div>
-      </section>
-
-      {/* Support */}
-      <section id="support" className="border-t border-fd-border">
-        <div className="mx-auto flex max-w-3xl flex-col items-center px-6 py-20 text-center">
-          <div className="mb-4 inline-flex size-12 items-center justify-center rounded-full bg-fd-primary/10 text-fd-primary">
-            <Mail className="size-6" />
-          </div>
-          <h2 className="text-2xl font-semibold">{t.supportHeading}</h2>
-          <p className="mt-3 max-w-xl text-balance text-fd-muted-foreground">{t.supportBody}</p>
-          <SupportForm
-            copy={{
-              emailLabel: t.supportEmailLabel,
-              emailPlaceholder: t.supportEmailPlaceholder,
-              messageLabel: t.supportMessageLabel,
-              messagePlaceholder: t.supportMessagePlaceholder,
-              submit: t.supportSubmit,
-              submitting: t.supportSubmitting,
-              success: t.supportSuccess,
-              error: t.supportError,
-            }}
-          />
         </div>
       </section>
     </main>
