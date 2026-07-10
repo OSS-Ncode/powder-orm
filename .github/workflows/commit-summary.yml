@@ -11,7 +11,13 @@ jobs:
   summarize:
     runs-on: [self-hosted, macOS]
     steps:
+      # fetch-depth: 0 — 한 번의 push에 여러 커밋이 포함되면 tip 이전
+      # 커밋들의 git 히스토리가 얕은 체크아웃(기본 depth 1)에는 없어서
+      # git log/show가 조용히 실패한다 (set +e라 워크플로우는 안 죽지만
+      # 데이터가 비게 됨). 전체 히스토리를 받아서 방지한다.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Summarize each pushed commit
         env:
