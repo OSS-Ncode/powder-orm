@@ -8,17 +8,17 @@
     ".NETCoreApp,Version=v10.0": {
       "Powder.Tests/1.0.0": {
         "dependencies": {
-          "Powder": "1.0.0"
+          "Powder": "0.1.0"
         },
         "runtime": {
           "Powder.Tests.dll": {}
         }
       },
-      "Powder/1.0.0": {
+      "Powder/0.1.0": {
         "runtime": {
           "Powder.dll": {
-            "assemblyVersion": "1.0.0.0",
-            "fileVersion": "1.0.0.0"
+            "assemblyVersion": "0.1.0.0",
+            "fileVersion": "0.1.0.0"
           }
         }
       }
@@ -30,7 +30,7 @@
       "serviceable": false,
       "sha512": ""
     },
-    "Powder/1.0.0": {
+    "Powder/0.1.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

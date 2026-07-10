@@ -61,3 +61,9 @@ users.GroupBy(new { by = new[] { "active" }, count = true,
 
 `where`는 `eq ne gt gte lt lte like in` + `AND/OR/NOT` 중첩,
 `include`(배치 관계 로드)/`join`(belongsTo LEFT JOIN)을 지원한다.
+
+`in`은 C# 예약어라 익명 객체에서는 `@` 이스케이프로 쓴다:
+
+```csharp
+users.FindMany(new { where = new { tier = new { @in = new[] { "vip", "gold" } } } });
+```

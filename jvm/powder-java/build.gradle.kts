@@ -1,13 +1,10 @@
 plugins {
     `java-library`
-    `maven-publish`
-    signing
+    id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
 java {
     toolchain { languageVersion.set(JavaLanguageVersion.of(17)) }
-    withSourcesJar()
-    withJavadocJar()
 }
 
 // The Java sources live under crates/powder-java/java. PowderTest.java is a
@@ -26,46 +23,25 @@ sourceSets {
     }
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            from(components["java"])
-            artifactId = "powder-java"
-            pom {
-                name.set("powder-java")
-                description.set("Java (JNI) binding for the Powder engine — a zero-copy columnar database client with a Rust core.")
-                url.set("https://github.com/OSS-Ncode/powderORM")
-                licenses { license { name.set("MIT"); url.set("https://opensource.org/licenses/MIT") } }
-                developers { developer { id.set("oss-ncode"); name.set("Powder team") } }
-                scm {
-                    url.set("https://github.com/OSS-Ncode/powderORM")
-                    connection.set("scm:git:https://github.com/OSS-Ncode/powderORM.git")
-                }
-            }
+// Publishes to the Maven Central Portal (central.sonatype.com). The plugin adds
+// the sources/javadoc jars, signs, and uploads. Credentials + signing key come
+// from env in CI (see release.yml). Signing only runs when a key is present.
+mavenPublishing {
+    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+    if (providers.gradleProperty("signingInMemoryKey").isPresent) {
+        signAllPublications()
+    }
+    coordinates(project.group.toString(), "powder-java", project.version.toString())
+    pom {
+        name.set("powder-java")
+        description.set("Java (JNI) binding for the Powder engine — a zero-copy columnar database client with a Rust core.")
+        url.set("https://github.com/OSS-Ncode/powderORM")
+        licenses { license { name.set("MIT"); url.set("https://opensource.org/licenses/MIT") } }
+        developers { developer { id.set("oss-ncode"); name.set("Powder team") } }
+        scm {
+            url.set("https://github.com/OSS-Ncode/powderORM")
+            connection.set("scm:git:https://github.com/OSS-Ncode/powderORM.git")
+            developerConnection.set("scm:git:ssh://git@github.com/OSS-Ncode/powderORM.git")
         }
     }
-    repositories {
-        maven {
-            // Sonatype OSSRH staging. New Central accounts may instead use the
-            // Central Portal — see PACKAGING.md. Credentials come from
-            // ORG_GRADLE_PROJECT_ossrhUsername / _ossrhPassword (env in CI).
-            name = "ossrh"
-            url = uri(providers.gradleProperty("ossrhUrl")
-                .getOrElse("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"))
-            credentials {
-                username = providers.gradleProperty("ossrhUsername").orNull
-                password = providers.gradleProperty("ossrhPassword").orNull
-            }
-        }
-    }
-}
-
-// Sign only when a key is configured (skips local dev builds).
-signing {
-    isRequired = providers.gradleProperty("signingKey").isPresent
-    useInMemoryPgpKeys(
-        providers.gradleProperty("signingKey").orNull,
-        providers.gradleProperty("signingPassword").orNull,
-    )
-    sign(publishing.publications["maven"])
 }

@@ -61,11 +61,12 @@ pub trait SqlDialect {
 /// Parse a dialect name (`--dialect <name>`) into an implementation.
 pub fn by_name(name: &str) -> Result<Box<dyn SqlDialect>, String> {
     match name.to_ascii_lowercase().as_str() {
-        "sqlite" => Ok(Box::new(Sqlite)),
+        "sqlite" | "libsql" => Ok(Box::new(Sqlite)),
         "postgres" | "postgresql" | "pg" => Ok(Box::new(Postgres)),
         "mysql" | "mariadb" => Ok(Box::new(MySql)),
+        "mssql" | "sqlserver" => Ok(Box::new(MsSql)),
         other => Err(format!(
-            "unknown dialect `{other}` (expected sqlite, postgres, or mysql)"
+            "unknown dialect `{other}` (expected sqlite, postgres, mysql, or mssql)"
         )),
     }
 }
@@ -242,6 +243,89 @@ impl SqlDialect for MySql {
     }
 }
 
+/// Microsoft SQL Server (T-SQL). Text columns render as `NVARCHAR(400)` —
+/// indexable (2×400 bytes < the 900-byte key limit) and Unicode; `NVARCHAR(MAX)`
+/// cannot be compared, grouped, or indexed. There is no
+/// `CREATE TABLE IF NOT EXISTS`; existence is guarded with `OBJECT_ID`.
+pub struct MsSql;
+
+impl SqlDialect for MsSql {
+    fn type_sql(&self, ct: ColumnType) -> &'static str {
+        match ct {
+            ColumnType::Int => "BIGINT",
+            ColumnType::Float => "FLOAT",
+            ColumnType::Text => "NVARCHAR(400)",
+            ColumnType::Bool => "BIT",
+        }
+    }
+
+    fn create_table(&self, table: &Table) -> String {
+        let pk_cols: Vec<&Column> = table.columns.iter().filter(|c| c.def.primary_key).collect();
+        let inline_pk = pk_cols.len() == 1;
+
+        let mut parts: Vec<String> = table
+            .columns
+            .iter()
+            .map(|c| {
+                let mut s = format!("{} {}", c.name, self.type_sql(c.def.column_type));
+                if inline_pk && c.def.primary_key {
+                    s.push_str(" PRIMARY KEY");
+                } else if !c.def.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                s
+            })
+            .collect();
+
+        if pk_cols.len() > 1 {
+            parts.push(format!(
+                "PRIMARY KEY ({})",
+                pk_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        for fk in &table.foreign_keys {
+            parts.push(format!(
+                "FOREIGN KEY ({}) REFERENCES {}({})",
+                fk.columns.join(", "),
+                fk.ref_table,
+                fk.ref_columns.join(", ")
+            ));
+        }
+
+        format!(
+            "IF OBJECT_ID('{0}', 'U') IS NULL CREATE TABLE {0} ({1})",
+            table.name,
+            parts.join(", ")
+        )
+    }
+
+    fn add_column(&self, table: &Table, col: &Column) -> Result<String, String> {
+        if col.def.primary_key {
+            return Err(format!(
+                "table `{}`: cannot add primary key column `{}` to an existing table",
+                table.name, col.name
+            ));
+        }
+        // T-SQL: `ADD` without the COLUMN keyword.
+        let mut ddl = format!(
+            "ALTER TABLE {} ADD {} {}",
+            table.name,
+            col.name,
+            self.type_sql(col.def.column_type)
+        );
+        if !col.def.nullable {
+            ddl.push_str(match col.def.column_type {
+                ColumnType::Text => " NOT NULL DEFAULT ''",
+                _ => " NOT NULL DEFAULT 0",
+            });
+        }
+        if let Some(r) = &col.def.references {
+            ddl.push_str(&format!(" REFERENCES {}({})", r.table, r.column));
+        }
+        Ok(ddl)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,12 +414,34 @@ mod tests {
     #[test]
     fn dialect_by_name() {
         assert!(by_name("sqlite").is_ok());
+        assert!(by_name("libsql").is_ok());
         assert!(by_name("postgres").is_ok());
         assert!(by_name("pg").is_ok());
         assert!(by_name("mysql").is_ok());
         assert!(by_name("mariadb").is_ok());
+        assert!(by_name("mssql").is_ok());
+        assert!(by_name("sqlserver").is_ok());
         assert!(by_name("oracle").is_err());
-        assert!(by_name("mssql").is_err());
+    }
+
+    #[test]
+    fn mssql_maps_types_and_guards_existence() {
+        let schema = Schema::parse(
+            r#"{"tables":{
+                "users":{"columns":{
+                    "id":{"type":"int","primaryKey":true},
+                    "name":{"type":"text"},
+                    "score":{"type":"float","nullable":true},
+                    "active":{"type":"bool"}
+                }}
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            MsSql.create_table(&schema.tables[0]),
+            "IF OBJECT_ID('users', 'U') IS NULL CREATE TABLE users \
+             (id BIGINT PRIMARY KEY, name NVARCHAR(400) NOT NULL, score FLOAT, active BIT NOT NULL)"
+        );
     }
 
     #[test]

@@ -10,3 +10,15 @@ Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.dll
 Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\refint\Powder.dll
 Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.pdb
 Q:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\ref\Powder.dll
+P:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net10.0\Powder.deps.json
+P:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net10.0\Powder.dll
+P:\oss-Ncode\bindings\csharp\Powder\bin\Debug\net10.0\Powder.pdb
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.GeneratedMSBuildEditorConfig.editorconfig
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.AssemblyInfoInputs.cache
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.AssemblyInfo.cs
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.csproj.CoreCompileInputs.cache
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.sourcelink.json
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.dll
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\refint\Powder.dll
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\Powder.pdb
+P:\oss-Ncode\bindings\csharp\Powder\obj\Debug\net10.0\ref\Powder.dll

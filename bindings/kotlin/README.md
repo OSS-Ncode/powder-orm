@@ -52,9 +52,12 @@ cargo build -p powder-java --release
 cd crates/powder-java && javac -d out java/com/powder/*.java   # Java 클래스
 cd ../../bindings/kotlin
 kotlinc -cp ../../crates/powder-java/out src/dev/powder/Powder.kt test/KotlinTest.kt -d out
-java -cp "out;../../crates/powder-java/out;<kotlin-stdlib.jar>" KotlinTestKt <powder_java.dll>
-# -> kotlin binding OK (22 checks)
+java --enable-native-access=ALL-UNNAMED -cp "out;../../crates/powder-java/out;<kotlin-stdlib.jar>" KotlinTestKt <powder_java.dll>
+# -> kotlin binding OK (40 checks)
 ```
+
+`--enable-native-access=ALL-UNNAMED`는 JDK 24+에서 `System::load` 제한 경고를
+막는다 (없어도 동작은 함).
 
 ## 스키마 인식 ORM (공유 Rust 엔진)
 

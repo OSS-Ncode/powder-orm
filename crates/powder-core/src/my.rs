@@ -36,6 +36,21 @@ impl MyBackend {
     }
 
     pub fn execute(&self, sql: &str, params: &[Value]) -> Result<usize> {
+        // Every binding's transaction helper speaks SQLite: `BEGIN IMMEDIATE`
+        // (no IMMEDIATE mode in MySQL) and `RELEASE <sp>` (MySQL requires the
+        // SAVEPOINT keyword). Normalize both.
+        let trimmed = sql.trim();
+        let rewritten: Option<String> = if trimmed.eq_ignore_ascii_case("BEGIN IMMEDIATE") {
+            Some("BEGIN".into())
+        } else if trimmed.len() > 8
+            && trimmed[..8].eq_ignore_ascii_case("RELEASE ")
+            && !trimmed[8..].trim_start().get(..9).is_some_and(|w| w.eq_ignore_ascii_case("SAVEPOINT"))
+        {
+            Some(format!("RELEASE SAVEPOINT {}", trimmed[8..].trim_start()))
+        } else {
+            None
+        };
+        let sql = rewritten.as_deref().unwrap_or(sql);
         let mut conn = self.lock()?;
         if params.is_empty() {
             // query_drop drains multi-statement results too.
@@ -107,9 +122,10 @@ fn rows_to_batch(rows: &[Row]) -> Result<RecordBatch> {
     for (ci, col) in cols.iter().enumerate() {
         let name = col.name_str().to_string();
         let dt = pcb_type(col.column_type(), &name)?;
+        let is_bit = col.column_type() == MyType::MYSQL_TYPE_BIT;
         let mut b = ColumnBuilder::new(dt);
         for r in rows {
-            push_cell(&mut b, r, ci, dt, &name)?;
+            push_cell(&mut b, r, ci, dt, &name, is_bit)?;
         }
         out.push(b.finish(name));
     }
@@ -122,6 +138,7 @@ fn push_cell(
     ci: usize,
     dt: DataType,
     name: &str,
+    is_bit: bool,
 ) -> Result<()> {
     let val = row
         .as_ref(ci)
@@ -131,16 +148,38 @@ fn push_cell(
         (DataType::Int64, MyValue::Int(i)) => b.push_i64(*i)?,
         (DataType::Int64, MyValue::UInt(u)) => b.push_i64(*u as i64)?,
         (DataType::Int64, MyValue::Bytes(bs)) => {
-            // BIT columns arrive as big-endian byte strings.
-            let mut acc: i64 = 0;
-            for byte in bs {
-                acc = (acc << 8) | *byte as i64;
+            if is_bit {
+                // BIT columns arrive as big-endian byte strings.
+                let mut acc: i64 = 0;
+                for byte in bs {
+                    acc = (acc << 8) | *byte as i64;
+                }
+                b.push_i64(acc)?;
+            } else {
+                // Text-protocol rows (parameterless queries) carry every
+                // value as its decimal string.
+                let s = std::str::from_utf8(bs).map_err(|_| {
+                    Error::Database(format!("column `{name}`: non-UTF-8 integer payload"))
+                })?;
+                let v: i64 = s.trim().parse().map_err(|_| {
+                    Error::Database(format!("column `{name}`: cannot parse `{s}` as integer"))
+                })?;
+                b.push_i64(v)?;
             }
-            b.push_i64(acc)?;
         }
         (DataType::Float64, MyValue::Float(f)) => b.push_f64(*f as f64)?,
         (DataType::Float64, MyValue::Double(f)) => b.push_f64(*f)?,
         (DataType::Float64, MyValue::Int(i)) => b.push_f64(*i as f64)?,
+        (DataType::Float64, MyValue::Bytes(bs)) => {
+            // Text-protocol float (see the Int64 branch above).
+            let s = std::str::from_utf8(bs).map_err(|_| {
+                Error::Database(format!("column `{name}`: non-UTF-8 float payload"))
+            })?;
+            let v: f64 = s.trim().parse().map_err(|_| {
+                Error::Database(format!("column `{name}`: cannot parse `{s}` as float"))
+            })?;
+            b.push_f64(v)?;
+        }
         (DataType::Utf8, MyValue::Bytes(bs)) => {
             let s = std::str::from_utf8(bs).map_err(|_| {
                 Error::Unsupported(format!(

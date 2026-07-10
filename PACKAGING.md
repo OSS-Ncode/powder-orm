@@ -1,7 +1,7 @@
 # Packaging & Release
 
-Powder ships one Rust core plus bindings, published to each ecosystem's registry.
-Releases are driven by a git tag: [.github/workflows/release.yml](.github/workflows/release.yml).
+Powder ships one Rust core plus bindings. A git tag drives
+[.github/workflows/release.yml](.github/workflows/release.yml).
 
 ```bash
 # bump the version in all three canonical manifests first (they must match the tag):
@@ -13,35 +13,58 @@ git tag v0.1.0 && git push origin v0.1.0
 
 `verify-version` fails the release if the tag and those manifests disagree.
 
-## Registries
+## What a tag does today
 
-| Registry | Package | Status | Trigger |
+**By default a tag only builds artifacts and creates a GitHub Release** — it does
+**not** publish to any registry. The release carries, for every platform
+(macOS arm64/x64, Linux x64, Windows x64):
+
+- `powder-native-<platform>.tar.gz` — the native libraries `powder_ffi`
+  (Go / C / C++ / C#) and `powder_java` (Java / Kotlin), loaded at runtime via
+  `POWDER_LIB` / `loadLibrary`.
+- `*.whl` — Python abi3 wheels (+ an sdist).
+- `*.node` — the napi prebuilds for `@powder/node`.
+
+You can also trigger it manually (`workflow_dispatch`) to build without tagging.
+
+## Registry publishing — opt-in, do it later
+
+Every registry job is **off until you set a repo variable** (Settings → Secrets
+and variables → Actions → *Variables*). Flip the variable and add the matching
+secrets — no workflow edits needed.
+
+| Registry | Package | Enable with | Auth |
 |---|---|---|---|
-| crates.io | `powder-core`, `powder-cli` | ✅ automated | tag `v*` |
-| npm | `@powder/node` (+ platform pkgs) | ✅ automated | tag `v*` |
-| PyPI | `powder` | ✅ automated (OIDC) | tag `v*` |
-| NuGet | `Powder` | ⚙️ opt-in (`vars.ENABLE_NUGET`) | tag `v*` |
-| Maven Central | `dev.powder:powder-java`, `:powder-kotlin` | ⚙️ opt-in (`vars.ENABLE_MAVEN`) | tag `v*` |
-| Go modules | `github.com/OSS-Ncode/powderORM/bindings/go` | ✅ tag-only | see below |
+| crates.io | `powder-core`, `powder-cli` | `ENABLE_PUBLISH=true` | **OIDC** (no secret) |
+| npm | `@powder/node` (+ platform pkgs) | `ENABLE_PUBLISH=true` | **OIDC** (no secret) |
+| PyPI | `powder` | `ENABLE_PUBLISH=true` | **OIDC** (no secret) |
+| NuGet | `Powder` | `ENABLE_NUGET=true` | **OIDC** + variable `NUGET_USER` |
+| Maven Central | `io.github.oss-ncode:powder-java`, `:powder-kotlin` | `ENABLE_MAVEN=true` | secrets `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `MAVEN_SIGNING_KEY`, `MAVEN_SIGNING_PASSWORD` |
+| Go modules | `github.com/OSS-Ncode/powderORM/bindings/go` | — (tag only) | see below |
 
-## Required secrets / variables
+Four registries use **OIDC Trusted Publishing** — the job requests
+`id-token: write` and the registry returns a short-lived credential, so there's no
+long-lived token to store. Configure the trusted publisher once on each registry,
+matching this repo + `release.yml`:
 
-Set under **Settings → Secrets and variables → Actions**.
+- **crates.io** (`rust-lang/crates-io-auth-action` exchanges the token): crates.io
+  → each crate → Settings → *Trusted Publishing* → GitHub, owner `OSS-Ncode`,
+  repo `powderORM`, workflow `release.yml`. Do it for `powder-core` **and**
+  `powder-cli`. A brand-new crate needs one initial token publish first, then OIDC.
+- **npm** (job upgrades to npm ≥ 11.5.1 automatically): npmjs.com → the package →
+  Settings → *Trusted Publisher* → GitHub Actions, repo `OSS-Ncode/powderORM`,
+  workflow `release.yml`. Do it for `@powder/node` **and each platform package**
+  (`@powder/node-*`). Brand-new packages may need one initial token publish before
+  a publisher can be attached, then OIDC thereafter. Provenance is automatic.
+- **PyPI**: pypi.org → account → Publishing → *Add a pending publisher* → project
+  `powder`, owner `OSS-Ncode`, repo `powderORM`, workflow `release.yml`,
+  environment `pypi`. Also create a GitHub Environment named `pypi`.
+- **NuGet**: nuget.org → account → *Trusted Publishing* → policy for this repo +
+  `release.yml`, then set repo **variable** `NUGET_USER` to your nuget.org
+  username (`NuGet/login` exchanges the OIDC token for a temporary API key).
 
-| Name | Kind | For |
-|---|---|---|
-| `CARGO_REGISTRY_TOKEN` | secret | crates.io |
-| `NPM_TOKEN` | secret | npm (automation token, publish rights to `@powder`) |
-| — | — | PyPI uses **OIDC Trusted Publishing** (no secret) |
-| `ENABLE_NUGET` | variable = `true` | turn on the NuGet jobs |
-| `NUGET_API_KEY` | secret | NuGet |
-| `ENABLE_MAVEN` | variable = `true` | turn on the Maven jobs |
-| `OSSRH_USERNAME`, `OSSRH_PASSWORD` | secret | Sonatype / Central Portal |
-| `MAVEN_SIGNING_KEY`, `MAVEN_SIGNING_PASSWORD` | secret | GPG signing (armored private key) |
-
-**PyPI Trusted Publishing:** register a publisher for this repo + `release.yml` at
-`https://pypi.org/manage/project/powder/settings/publishing/`, and create a GitHub
-Environment named `pypi` (referenced by the publish job).
+Only Maven Central still uses stored secrets (no GitHub-OIDC trusted publishing
+flow yet) — see the Maven section below.
 
 ## Per-registry notes
 
@@ -73,13 +96,24 @@ Gradle build lives in [jvm/](jvm/); it points its sourceSets at the existing
 jars** — the JNI native (`powder_java`) is shipped on the GitHub Release and
 loaded via `Powder.loadLibrary(path)` / `POWDER_LIB`.
 
-- `group` is `dev.powder`, which must be verified as a Maven Central namespace
-  (prove ownership of `powder.dev`). If you don't own it, set `group` in
-  [jvm/gradle.properties](jvm/gradle.properties) to `io.github.oss-ncode`, which
-  Central auto-verifies from the GitHub repo.
-- The build targets the OSSRH staging endpoint. Newer Central accounts publish via
-  the **Central Portal**; if so, point `-PossrhUrl=` at the portal endpoint or
-  adopt the `com.vanniktech.maven.publish` plugin.
+- Uses the **`com.vanniktech.maven.publish`** plugin targeting the **Central
+  Portal** (central.sonatype.com) — the current onboarding path. The plugin adds
+  the sources/javadoc jars, signs, uploads, and releases in one task
+  (`publishAndReleaseToMavenCentral`).
+- `group` is **`io.github.oss-ncode`** ([jvm/gradle.properties](jvm/gradle.properties)),
+  auto-verified as a namespace from the GitHub repo — no domain needed.
+
+**Onboarding (do once):**
+1. **central.sonatype.com** → Sign in with GitHub → *Namespaces* → add
+   `io.github.oss-ncode` → verify (create the public repo it names).
+2. *View Account* → **Generate User Token** → the **Username** and **Password**
+   become secrets `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD`. (Ignore the
+   base64 `user:pass` blob — that's only for manual HTTP / settings.xml.)
+3. GPG key: `gpg --gen-key`, publish it
+   (`gpg --keyserver keys.openpgp.org --send-keys <KEYID>`), then set
+   `MAVEN_SIGNING_KEY` to the armored private key
+   (`gpg --armor --export-secret-keys <KEYID>`) and `MAVEN_SIGNING_PASSWORD` to its
+   passphrase.
 
 ### Go modules
 Nothing to publish — the module proxy indexes a pushed tag. Because the module
@@ -99,8 +133,9 @@ build `powder-ffi` and link. (vcpkg/Conan ports are a possible future addition.)
 ## Deferred / follow-ups
 
 - **Internal Java package rename `com.powder → dev.powder`.** Cosmetic only —
-  groupId `dev.powder` publishes fine with the `com.powder` package as-is. Doing
-  the rename means updating the JNI symbol names in
+  the Maven groupId (`io.github.oss-ncode`) is independent of the Java package, so
+  `com.powder` publishes fine as-is. Doing the rename means updating the JNI symbol
+  names in
   [crates/powder-java/src/lib.rs](crates/powder-java/src/lib.rs)
   (`Java_com_powder_PowderNative_*` → `Java_dev_powder_*`), moving the `java/com/powder`
   files, and updating the Kotlin `import com.powder.*`. Do it with a JVM + cargo

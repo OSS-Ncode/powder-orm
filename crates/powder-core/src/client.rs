@@ -28,6 +28,18 @@ pub struct Client {
     inner: Backend,
 }
 
+/// Which SQL dialect the connected backend speaks. The ORM consults this for
+/// the few constructs that differ (SQL Server has TOP/OFFSET-FETCH instead
+/// of LIMIT/OFFSET).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlFlavor {
+    Sqlite,
+    Postgres,
+    MySql,
+    MsSql,
+    LibSql,
+}
+
 /// The engine behind a [`Client`]. SQLite is bundled; PostgreSQL is opt-in
 /// via the `postgres` cargo feature and selected by connection URL.
 #[derive(Clone)]
@@ -37,6 +49,10 @@ enum Backend {
     Pg(Arc<crate::pg::PgBackend>),
     #[cfg(feature = "mysql")]
     My(Arc<crate::my::MyBackend>),
+    #[cfg(feature = "mssql")]
+    Ms(Arc<crate::ms::MsBackend>),
+    #[cfg(feature = "libsql")]
+    Ls(Arc<crate::ls::LsBackend>),
 }
 
 #[derive(Clone)]
@@ -203,9 +219,56 @@ impl Client {
                 "mysql:// URLs need powder-core built with the `mysql` feature".into(),
             ));
         }
+        if url.starts_with("mssql://") || url.starts_with("sqlserver://") {
+            #[cfg(feature = "mssql")]
+            {
+                let url = url.to_string();
+                let backend = tokio::task::spawn_blocking(move || crate::ms::MsBackend::connect(&url))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))??;
+                return Ok(Self {
+                    inner: Backend::Ms(Arc::new(backend)),
+                });
+            }
+            #[cfg(not(feature = "mssql"))]
+            return Err(Error::InvalidUrl(
+                "mssql:// URLs need powder-core built with the `mssql` feature".into(),
+            ));
+        }
+        if url.starts_with("libsql://") {
+            #[cfg(feature = "libsql")]
+            {
+                let url = url.to_string();
+                let backend = tokio::task::spawn_blocking(move || crate::ls::LsBackend::connect(&url))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))??;
+                return Ok(Self {
+                    inner: Backend::Ls(Arc::new(backend)),
+                });
+            }
+            #[cfg(not(feature = "libsql"))]
+            return Err(Error::InvalidUrl(
+                "libsql:// URLs need powder-core built with the `libsql` feature".into(),
+            ));
+        }
         Ok(Self {
             inner: Backend::Sqlite(SqliteClient::connect(url).await?),
         })
+    }
+
+    /// The SQL dialect of the connected backend.
+    pub fn flavor(&self) -> SqlFlavor {
+        match &self.inner {
+            Backend::Sqlite(_) => SqlFlavor::Sqlite,
+            #[cfg(feature = "postgres")]
+            Backend::Pg(_) => SqlFlavor::Postgres,
+            #[cfg(feature = "mysql")]
+            Backend::My(_) => SqlFlavor::MySql,
+            #[cfg(feature = "mssql")]
+            Backend::Ms(_) => SqlFlavor::MsSql,
+            #[cfg(feature = "libsql")]
+            Backend::Ls(_) => SqlFlavor::LibSql,
+        }
     }
 
     /// Run a statement that does not return rows (INSERT/UPDATE/DDL); returns
@@ -224,6 +287,20 @@ impl Client {
             Backend::My(m) => {
                 let (m, sql) = (m.clone(), sql.to_string());
                 tokio::task::spawn_blocking(move || m.execute(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+            #[cfg(feature = "mssql")]
+            Backend::Ms(m) => {
+                let (m, sql) = (m.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || m.execute(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+            #[cfg(feature = "libsql")]
+            Backend::Ls(l) => {
+                let (l, sql) = (l.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || l.execute(&sql, &params))
                     .await
                     .map_err(|e| Error::Join(e.to_string()))?
             }
@@ -248,6 +325,20 @@ impl Client {
                     .await
                     .map_err(|e| Error::Join(e.to_string()))?
             }
+            #[cfg(feature = "mssql")]
+            Backend::Ms(m) => {
+                let (m, sql) = (m.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || m.query(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
+            #[cfg(feature = "libsql")]
+            Backend::Ls(l) => {
+                let (l, sql) = (l.clone(), sql.to_string());
+                tokio::task::spawn_blocking(move || l.query(&sql, &params))
+                    .await
+                    .map_err(|e| Error::Join(e.to_string()))?
+            }
         }
     }
 
@@ -260,6 +351,10 @@ impl Client {
             Backend::Pg(_) => None,
             #[cfg(feature = "mysql")]
             Backend::My(_) => None,
+            #[cfg(feature = "mssql")]
+            Backend::Ms(_) => None,
+            #[cfg(feature = "libsql")]
+            Backend::Ls(_) => None,
         }
     }
 
@@ -275,6 +370,16 @@ impl Client {
             }
             #[cfg(feature = "mysql")]
             Backend::My(_) => {
+                let batch = self.query(sql, params).await?;
+                Ok(Arc::new(batch.encode()))
+            }
+            #[cfg(feature = "mssql")]
+            Backend::Ms(_) => {
+                let batch = self.query(sql, params).await?;
+                Ok(Arc::new(batch.encode()))
+            }
+            #[cfg(feature = "libsql")]
+            Backend::Ls(_) => {
                 let batch = self.query(sql, params).await?;
                 Ok(Arc::new(batch.encode()))
             }

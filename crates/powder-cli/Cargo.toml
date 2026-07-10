@@ -19,3 +19,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 postgres = "0.19"
 # Live MySQL/MariaDB migrations/validation (`powder migrate --db mysql://...`).
 mysql = { version = "25", default-features = false, features = ["minimal"] }
+# Live SQL Server / libSQL migrations/validation - reuses the engine backends
+# (they expose a synchronous surface).
+powder-core = { workspace = true, features = ["mssql", "libsql"] }

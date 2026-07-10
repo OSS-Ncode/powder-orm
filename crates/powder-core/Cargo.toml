@@ -10,9 +10,14 @@ description = "Zero-copy columnar database engine core (Powder)"
 [features]
 default = []
 # PostgreSQL runtime backend: `Client::connect("postgres://...")`.
-postgres = ["dep:postgres"]
+postgres = ["dep:postgres", "dep:bytes"]
 # MySQL/MariaDB runtime backend: `Client::connect("mysql://...")`.
 mysql = ["dep:mysql"]
+# Microsoft SQL Server runtime backend: `Client::connect("mssql://...")`.
+mssql = ["dep:tiberius", "dep:tokio-util", "tokio/net"]
+# libSQL runtime backend (local file or remote sqld/Turso):
+# `Client::connect("libsql://...")`.
+libsql = ["dep:libsql"]
 
 [dependencies]
 thiserror.workspace = true
@@ -26,7 +31,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # thread spawn/teardown.
 rayon = "1"
 postgres = { version = "0.19", optional = true }
+# Only for the ToSql impl of the typeless NULL parameter (pg.rs).
+bytes = { version = "1", optional = true }
 mysql = { version = "25", optional = true, default-features = false, features = ["minimal"] }
+# SQL Server: tds73 speaks to 2008+; winauth enables Windows integrated auth.
+tiberius = { version = "0.12", optional = true, default-features = false, features = ["tds73", "winauth"] }
+tokio-util = { version = "0.7", optional = true, features = ["compat"] }
+libsql = { version = "0.9", optional = true, default-features = false, features = ["core", "remote", "tls"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

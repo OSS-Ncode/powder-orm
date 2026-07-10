@@ -12,7 +12,7 @@ name = "_powder"
 crate-type = ["cdylib"]
 
 [dependencies]
-powder-core = { workspace = true, features = ["postgres", "mysql"] }
+powder-core = { workspace = true, features = ["postgres", "mysql", "mssql", "libsql"] }
 # abi3-py39: build a single stable-ABI wheel that works on CPython 3.9+, so
 # releases ship one wheel per platform instead of one per Python version.
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }

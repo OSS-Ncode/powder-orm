@@ -33,6 +33,10 @@ pub mod batch;
 pub mod client;
 pub mod codec;
 pub mod error;
+#[cfg(feature = "libsql")]
+pub mod ls;
+#[cfg(feature = "mssql")]
+pub mod ms;
 #[cfg(feature = "mysql")]
 pub mod my;
 pub mod orm;

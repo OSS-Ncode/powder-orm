@@ -6,15 +6,28 @@
 
 use rusqlite::Connection;
 
-use crate::dialect::{MySql, Postgres, SqlDialect, Sqlite};
+use crate::dialect::{MsSql, MySql, Postgres, SqlDialect, Sqlite};
 use crate::schema::{ColumnType, Schema, Table};
 
 /// A live connection to any supported backend. SQLite is file/memory-based;
-/// PostgreSQL connects over the network (`postgres://user:pass@host/db`).
+/// the server backends connect over the network. SQL Server and libSQL reuse
+/// the engine's own backends (`powder_core::ms` / `powder_core::ls`), which
+/// expose a synchronous surface.
 pub enum AnyConn {
     Sqlite(Connection),
     Pg(postgres::Client),
     My(mysql::Conn),
+    Ms(powder_core::ms::MsBackend),
+    Ls(powder_core::ls::LsBackend),
+}
+
+/// `postgres::Error::to_string()` is just "db error"; the server's actual
+/// message lives in the `DbError` behind it. Surface it.
+fn pg_es(e: &postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(db) => format!("{} ({})", db.message(), db.code().code()),
+        None => e.to_string(),
+    }
 }
 
 impl AnyConn {
@@ -22,11 +35,13 @@ impl AnyConn {
     pub fn execute_batch(&mut self, sql: &str) -> Result<(), String> {
         match self {
             AnyConn::Sqlite(c) => c.execute_batch(sql).map_err(|e| e.to_string()),
-            AnyConn::Pg(c) => c.batch_execute(sql).map_err(|e| e.to_string()),
+            AnyConn::Pg(c) => c.batch_execute(sql).map_err(|e| pg_es(&e)),
             AnyConn::My(c) => {
                 use mysql::prelude::Queryable;
                 c.query_drop(sql).map_err(|e| e.to_string())
             }
+            AnyConn::Ms(c) => c.execute(sql, &[]).map(|_| ()).map_err(|e| e.to_string()),
+            AnyConn::Ls(c) => c.execute(sql, &[]).map(|_| ()).map_err(|e| e.to_string()),
         }
     }
 
@@ -36,6 +51,8 @@ impl AnyConn {
             AnyConn::Sqlite(_) => &Sqlite,
             AnyConn::Pg(_) => &Postgres,
             AnyConn::My(_) => &MySql,
+            AnyConn::Ms(_) => &MsSql,
+            AnyConn::Ls(_) => &Sqlite, // libSQL speaks the SQLite dialect
         }
     }
 
@@ -44,6 +61,8 @@ impl AnyConn {
             AnyConn::Sqlite(c) => introspect(c, table),
             AnyConn::Pg(c) => pg_introspect(c, table),
             AnyConn::My(c) => my_introspect(c, table),
+            AnyConn::Ms(c) => ms_introspect(c, table),
+            AnyConn::Ls(c) => ls_introspect(c, table),
         }
     }
 
@@ -52,6 +71,8 @@ impl AnyConn {
             AnyConn::Sqlite(c) => introspect_fks(c, table),
             AnyConn::Pg(c) => pg_introspect_fks(c, table),
             AnyConn::My(c) => my_introspect_fks(c, table),
+            AnyConn::Ms(c) => ms_introspect_fks(c, table),
+            AnyConn::Ls(c) => ls_introspect_fks(c, table),
         }
     }
 
@@ -121,7 +142,39 @@ impl AnyConn {
                     .map_err(|e| format!("seed `{table}`: {e}"))?;
                 Ok(())
             }
+            AnyConn::Ms(_) | AnyConn::Ls(_) => {
+                let sql = format!(
+                    "INSERT INTO {table} ({}) VALUES ({})",
+                    cols.join(", "),
+                    vec!["?"; cols.len()].join(", ")
+                );
+                let params: Vec<powder_core::Value> = values
+                    .iter()
+                    .map(|v| json_to_value(table, v))
+                    .collect::<Result<_, _>>()?;
+                let r = match self {
+                    AnyConn::Ms(c) => c.execute(&sql, &params),
+                    AnyConn::Ls(c) => c.execute(&sql, &params),
+                    _ => unreachable!(),
+                };
+                r.map(|_| ()).map_err(|e| format!("seed `{table}`: {e}"))
+            }
         }
+    }
+}
+
+fn json_to_value(table: &str, v: &serde_json::Value) -> Result<powder_core::Value, String> {
+    use powder_core::Value;
+    match v {
+        serde_json::Value::Null => Ok(Value::Null),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
+        serde_json::Value::Number(n) => Ok(if let Some(i) = n.as_i64() {
+            Value::Int(i)
+        } else {
+            Value::Float(n.as_f64().unwrap())
+        }),
+        serde_json::Value::String(s) => Ok(Value::Text(s.clone())),
+        other => Err(format!("seed `{table}`: unsupported value {other}")),
     }
 }
 
@@ -218,6 +271,169 @@ fn my_introspect_fks(c: &mut mysql::Conn, table: &str) -> Result<Vec<DbForeignKe
     Ok(out)
 }
 
+// --- SQL Server introspection (sys catalog views) -----------------------------
+
+/// Normalize INFORMATION_SCHEMA DATA_TYPE spellings onto the MsSql dialect's
+/// DDL spellings. All nvarchar widths collapse to the dialect's NVARCHAR(400)
+/// (width is a dialect artifact, not drift — same policy as MySQL).
+fn ms_normalize_type(data_type: &str) -> String {
+    match data_type.to_ascii_lowercase().as_str() {
+        "nvarchar" | "nchar" | "varchar" | "char" => "NVARCHAR(400)".into(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+fn ms_introspect(c: &powder_core::ms::MsBackend, table: &str) -> Result<Vec<DbColumn>, String> {
+    let t = powder_core::Value::Text(table.to_string());
+    let cols = c
+        .query(
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+            &[t.clone()],
+        )
+        .map_err(|e| e.to_string())?;
+    if cols.num_rows == 0 {
+        return Ok(Vec::new());
+    }
+    let pks = c
+        .query(
+            "SELECT col.name AS name, CAST(ic.key_ordinal AS BIGINT) AS ord
+             FROM sys.indexes i
+             JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+             JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+             WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID(?)",
+            &[t],
+        )
+        .map_err(|e| e.to_string())?;
+    let pk_of = |name: &str| -> i64 {
+        for r in 0..pks.num_rows {
+            if pks.column("name").and_then(|c| c.str(r)) == Some(name) {
+                return pks.column("ord").and_then(|c| c.i64(r)).unwrap_or(0);
+            }
+        }
+        0
+    };
+    let mut out = Vec::with_capacity(cols.num_rows);
+    for r in 0..cols.num_rows {
+        let name = cols
+            .column("COLUMN_NAME")
+            .and_then(|c| c.str(r))
+            .unwrap_or("")
+            .to_string();
+        let data_type = cols.column("DATA_TYPE").and_then(|c| c.str(r)).unwrap_or("");
+        let nullable = cols.column("IS_NULLABLE").and_then(|c| c.str(r)).unwrap_or("YES");
+        out.push(DbColumn {
+            sql_type: ms_normalize_type(data_type),
+            notnull: nullable == "NO",
+            pk: pk_of(&name),
+            name,
+        });
+    }
+    Ok(out)
+}
+
+fn ms_introspect_fks(
+    c: &powder_core::ms::MsBackend,
+    table: &str,
+) -> Result<Vec<DbForeignKey>, String> {
+    let t = powder_core::Value::Text(table.to_string());
+    let rows = c
+        .query(
+            "SELECT fk.name AS fk_name, pc.name AS from_col, rt.name AS ref_table, rc.name AS ref_col
+             FROM sys.foreign_keys fk
+             JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+             JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+             JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
+             JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+             WHERE fk.parent_object_id = OBJECT_ID(?)
+             ORDER BY fk.name, fkc.constraint_column_id",
+            &[t],
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out: Vec<DbForeignKey> = Vec::new();
+    let mut cur: Option<String> = None;
+    for r in 0..rows.num_rows {
+        let get = |col: &str| rows.column(col).and_then(|c| c.str(r)).unwrap_or("").to_string();
+        let constraint = get("fk_name");
+        if cur.as_deref() != Some(constraint.as_str()) {
+            cur = Some(constraint);
+            out.push(DbForeignKey {
+                from: Vec::new(),
+                table: get("ref_table"),
+                to: Vec::new(),
+            });
+        }
+        let fk = out.last_mut().unwrap();
+        fk.from.push(get("from_col"));
+        fk.to.push(get("ref_col"));
+    }
+    Ok(out)
+}
+
+// --- libSQL introspection (SQLite PRAGMAs over the wire) -----------------------
+
+fn ls_introspect(c: &powder_core::ls::LsBackend, table: &str) -> Result<Vec<DbColumn>, String> {
+    let batch = c
+        .query(&format!("PRAGMA table_info({table})"), &[])
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(batch.num_rows);
+    for r in 0..batch.num_rows {
+        out.push(DbColumn {
+            name: batch
+                .column("name")
+                .and_then(|c| c.str(r))
+                .unwrap_or("")
+                .to_string(),
+            sql_type: batch
+                .column("type")
+                .and_then(|c| c.str(r))
+                .unwrap_or("")
+                .to_ascii_uppercase(),
+            notnull: batch.column("notnull").and_then(|c| c.i64(r)).unwrap_or(0) != 0,
+            pk: batch.column("pk").and_then(|c| c.i64(r)).unwrap_or(0),
+        });
+    }
+    Ok(out)
+}
+
+fn ls_introspect_fks(
+    c: &powder_core::ls::LsBackend,
+    table: &str,
+) -> Result<Vec<DbForeignKey>, String> {
+    let batch = c
+        .query(&format!("PRAGMA foreign_key_list({table})"), &[])
+        .map_err(|e| e.to_string())?;
+    // Columns: id, seq, table, from, to, ... — group by id, ordered by seq.
+    let mut rows: Vec<(i64, i64, String, String, String)> = Vec::new();
+    for r in 0..batch.num_rows {
+        rows.push((
+            batch.column("id").and_then(|c| c.i64(r)).unwrap_or(0),
+            batch.column("seq").and_then(|c| c.i64(r)).unwrap_or(0),
+            batch.column("table").and_then(|c| c.str(r)).unwrap_or("").to_string(),
+            batch.column("from").and_then(|c| c.str(r)).unwrap_or("").to_string(),
+            batch.column("to").and_then(|c| c.str(r)).unwrap_or("").to_string(),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut out: Vec<DbForeignKey> = Vec::new();
+    let mut cur: Option<i64> = None;
+    for (id, _seq, table, from, to) in rows {
+        if cur != Some(id) {
+            cur = Some(id);
+            out.push(DbForeignKey {
+                from: Vec::new(),
+                table,
+                to: Vec::new(),
+            });
+        }
+        let fk = out.last_mut().unwrap();
+        fk.from.push(from);
+        fk.to.push(to);
+    }
+    Ok(out)
+}
+
 fn json_to_sqlite(table: &str, v: &serde_json::Value) -> Result<rusqlite::types::Value, String> {
     match v {
         serde_json::Value::Null => Ok(rusqlite::types::Value::Null),
@@ -257,13 +473,13 @@ fn pg_introspect(c: &mut postgres::Client, table: &str) -> Result<Vec<DbColumn>,
         .query(
             "SELECT a.attname, k.ord::bigint
              FROM pg_constraint con
-             JOIN pg_class rel ON rel.oid = con.conrelid,
-                  unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
+             JOIN pg_class rel ON rel.oid = con.conrelid
+             CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
              JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
              WHERE con.contype = 'p' AND rel.relname = $1",
             &[&table],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| pg_es(&e))?;
     let pk_of = |name: &str| -> i64 {
         pk_rows
             .iter()
@@ -280,7 +496,7 @@ fn pg_introspect(c: &mut postgres::Client, table: &str) -> Result<Vec<DbColumn>,
              ORDER BY ordinal_position",
             &[&table],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| pg_es(&e))?;
     Ok(rows
         .iter()
         .map(|r| {
@@ -313,7 +529,7 @@ fn pg_introspect_fks(c: &mut postgres::Client, table: &str) -> Result<Vec<DbFore
              WHERE con.contype = 'f' AND rel.relname = $1",
             &[&table],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| pg_es(&e))?;
     Ok(rows
         .iter()
         .map(|r| DbForeignKey {
@@ -345,6 +561,16 @@ pub fn open_at(url: &str, cwd: &std::path::Path) -> Result<AnyConn, String> {
         let conn = mysql::Conn::new(opts)
             .map_err(|e| format!("cannot open database `{url}`: {e}"))?;
         return Ok(AnyConn::My(conn));
+    }
+    if url.starts_with("mssql://") || url.starts_with("sqlserver://") {
+        let backend = powder_core::ms::MsBackend::connect(url)
+            .map_err(|e| format!("cannot open database `{url}`: {e}"))?;
+        return Ok(AnyConn::Ms(backend));
+    }
+    if url.starts_with("libsql://") {
+        let backend = powder_core::ls::LsBackend::connect(url)
+            .map_err(|e| format!("cannot open database `{url}`: {e}"))?;
+        return Ok(AnyConn::Ls(backend));
     }
     let conn = if url == ":memory:" || url == "sqlite::memory:" {
         Connection::open_in_memory()
@@ -484,9 +710,9 @@ pub fn migrate_rebuild(conn: &mut AnyConn, schema: &Schema) -> Result<Vec<String
     let mut applied = migrate(conn, schema)?;
     let conn = match conn {
         AnyConn::Sqlite(c) => c,
-        AnyConn::Pg(_) | AnyConn::My(_) => {
+        AnyConn::Pg(_) | AnyConn::My(_) | AnyConn::Ms(_) | AnyConn::Ls(_) => {
             return Err(
-                "--rebuild is SQLite-only for now; on PostgreSQL/MySQL express destructive changes \
+                "--rebuild is SQLite-only for now; on server databases express destructive changes \
                  as explicit ALTER statements"
                     .into(),
             )
@@ -576,9 +802,10 @@ pub fn migrate_rebuild(conn: &mut AnyConn, schema: &Schema) -> Result<Vec<String
 /// mismatches; empty means the two are in sync.
 pub fn validate(conn: &mut AnyConn, schema: &Schema) -> Result<Vec<String>, String> {
     let expected: fn(ColumnType) -> String = match conn {
-        AnyConn::Sqlite(_) => sqlite_expected,
+        AnyConn::Sqlite(_) | AnyConn::Ls(_) => sqlite_expected,
         AnyConn::Pg(_) => |ct| Postgres.type_sql(ct).to_string(),
         AnyConn::My(_) => |ct| MySql.type_sql(ct).to_string(),
+        AnyConn::Ms(_) => |ct| MsSql.type_sql(ct).to_string(),
     };
     let mut problems = Vec::new();
     for table in &schema.tables {

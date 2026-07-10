@@ -34,6 +34,24 @@ examples/powder-demo/*.js
 crates/powder-java/out/
 *.class
 
+# .NET / C# binding build output
+[Bb]in/
+[Oo]bj/
+*.user
+*.nupkg
+*.snupkg
+
+# JVM publishing (Gradle)
+.gradle/
+jvm/**/build/
+
+# IDE / editor
+.vs/
+.idea/
+*.swp
+*.swo
+*~
+
 # Go
 bindings/go/*.test
 bench-site/bench/go-bench/go-bench*

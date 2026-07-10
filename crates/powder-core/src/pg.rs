@@ -12,7 +12,7 @@
 
 use std::sync::Mutex;
 
-use postgres::types::{ToSql, Type};
+use postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 use postgres::{Client as PgConn, NoTls, Row};
 
 use crate::array::ColumnBuilder;
@@ -35,6 +35,13 @@ impl PgBackend {
     }
 
     pub fn execute(&self, sql: &str, params: &[Value]) -> Result<usize> {
+        // Every binding's transaction helper opens with SQLite's
+        // `BEGIN IMMEDIATE`; Postgres has no IMMEDIATE mode — plain BEGIN.
+        let sql = if sql.trim().eq_ignore_ascii_case("BEGIN IMMEDIATE") {
+            "BEGIN"
+        } else {
+            sql
+        };
         let sql = translate_placeholders(sql);
         let bound = bind(params);
         let refs: Vec<&(dyn ToSql + Sync)> =
@@ -44,12 +51,12 @@ impl PgBackend {
         // statements) needs `batch_execute`. Route by shape.
         if params.is_empty() && sql.contains(';') {
             conn.batch_execute(&sql)
-                .map_err(|e| Error::Database(e.to_string()))?;
+                .map_err(|e| pg_err(e))?;
             return Ok(0);
         }
         let n = conn
             .execute(sql.as_str(), &refs)
-            .map_err(|e| Error::Database(e.to_string()))?;
+            .map_err(|e| pg_err(e))?;
         Ok(n as usize)
     }
 
@@ -61,7 +68,7 @@ impl PgBackend {
         let mut conn = self.lock()?;
         let rows = conn
             .query(sql.as_str(), &refs)
-            .map_err(|e| Error::Database(e.to_string()))?;
+            .map_err(|e| pg_err(e))?;
         drop(conn);
         rows_to_batch(&rows)
     }
@@ -136,18 +143,69 @@ pub fn translate_placeholders(sql: &str) -> String {
     String::from_utf8(out).expect("only ASCII inserted into valid UTF-8")
 }
 
+/// One bound parameter, serialized against the type Postgres *inferred* for
+/// its slot. Postgres is strict where SQLite is lax: an i64 aimed at a
+/// FLOAT8 slot is rejected client-side, and every binding that crosses via
+/// JSON writes `100000.0` as `100000` (losing the float-ness). `to_sql`
+/// receives the slot's type, so numbers are adapted here instead:
+/// Int→float slot widens, integral Float→int slot narrows, NULL binds
+/// against anything.
+#[derive(Debug)]
+struct PgVal(Value);
+
+type ToSqlResult = std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>>;
+
+impl ToSql for PgVal {
+    fn to_sql(&self, ty: &Type, out: &mut bytes::BytesMut) -> ToSqlResult {
+        let mismatch = || -> ToSqlResult {
+            Err(format!("cannot bind {:?} to a `{ty}` parameter", self.0).into())
+        };
+        match &self.0 {
+            Value::Null => Ok(IsNull::Yes),
+            Value::Int(i) => match *ty {
+                Type::INT2 => (*i as i16).to_sql(ty, out),
+                Type::INT4 => (*i as i32).to_sql(ty, out),
+                Type::INT8 => i.to_sql(ty, out),
+                Type::FLOAT4 => (*i as f32).to_sql(ty, out),
+                Type::FLOAT8 => (*i as f64).to_sql(ty, out),
+                Type::BOOL => (*i != 0).to_sql(ty, out),
+                _ => mismatch(),
+            },
+            Value::Float(f) => match *ty {
+                Type::FLOAT4 => (*f as f32).to_sql(ty, out),
+                Type::FLOAT8 => f.to_sql(ty, out),
+                Type::INT2 if f.fract() == 0.0 => (*f as i16).to_sql(ty, out),
+                Type::INT4 if f.fract() == 0.0 => (*f as i32).to_sql(ty, out),
+                Type::INT8 if f.fract() == 0.0 => (*f as i64).to_sql(ty, out),
+                _ => mismatch(),
+            },
+            Value::Bool(b) => match *ty {
+                Type::BOOL => b.to_sql(ty, out),
+                Type::INT2 => (*b as i16).to_sql(ty, out),
+                Type::INT4 => (*b as i32).to_sql(ty, out),
+                Type::INT8 => (*b as i64).to_sql(ty, out),
+                _ => mismatch(),
+            },
+            Value::Text(s) => match *ty {
+                Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+                    s.as_str().to_sql(ty, out)
+                }
+                _ => mismatch(),
+            },
+        }
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true // per-type dispatch happens in to_sql
+    }
+
+    to_sql_checked!();
+}
+
 fn bind(params: &[Value]) -> Vec<Box<dyn ToSql + Sync + Send>> {
     params
         .iter()
-        .map(|v| -> Box<dyn ToSql + Sync + Send> {
-            match v {
-                Value::Null => Box::new(Option::<i64>::None),
-                Value::Int(i) => Box::new(*i),
-                Value::Float(f) => Box::new(*f),
-                Value::Text(s) => Box::new(s.clone()),
-                Value::Bool(b) => Box::new(*b),
-            }
-        })
+        .map(|v| -> Box<dyn ToSql + Sync + Send> { Box::new(PgVal(v.clone())) })
         .collect()
 }
 
@@ -227,8 +285,18 @@ fn push_cell(b: &mut ColumnBuilder, row: &Row, ci: usize, ty: &Type) -> Result<(
     Ok(())
 }
 
+/// `postgres::Error::to_string()` is just "db error"; the server's actual
+/// message (e.g. `violates foreign key constraint ...`) lives in the
+/// `DbError` behind it. Surface it.
+fn pg_msg(e: &postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(db) => format!("{} ({})", db.message(), db.code().code()),
+        None => e.to_string(),
+    }
+}
+
 fn pg_err(e: postgres::Error) -> Error {
-    Error::Database(e.to_string())
+    Error::Database(pg_msg(&e))
 }
 
 #[cfg(test)]

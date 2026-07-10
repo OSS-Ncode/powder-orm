@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "index.node"
+    "index.node",
+    "index.*.node"
   ],
   "scripts": {
     "build": "napi build --platform --release && tsc -p tsconfig.json",

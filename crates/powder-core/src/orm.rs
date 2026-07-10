@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Number, Value as J};
 
+use crate::client::SqlFlavor;
+
 use crate::array::Column;
 use crate::error::{Error, Result};
 use crate::{Client, RecordBatch, Value};
@@ -300,6 +302,24 @@ fn to_param(v: &J) -> Result<Value> {
     }
 }
 
+/// Nudge a bound param toward the column's declared type. Strongly-typed
+/// backends (Postgres) reject an i64 aimed at a FLOAT8 slot, so `9` written
+/// to a float column must cross the wire as `9.0` — JSON callers routinely
+/// spell integral floats without the decimal point.
+fn coerce(ty: Option<ColType>, p: Value) -> Value {
+    match (ty, p) {
+        (Some(ColType::Float), Value::Int(i)) => Value::Float(i as f64),
+        (Some(ColType::Int), Value::Float(f)) if f.fract() == 0.0 => Value::Int(f as i64),
+        (Some(ColType::Bool), Value::Int(i)) => Value::Bool(i != 0),
+        (_, p) => p,
+    }
+}
+
+/// `to_param`, coerced to `col`'s declared type on `table`.
+fn to_param_as(table: &OrmTable, col: &str, v: &J) -> Result<Value> {
+    Ok(coerce(table.column(col).map(|c| c.ty), to_param(v)?))
+}
+
 fn num(v: f64) -> J {
     Number::from_f64(v).map(J::Number).unwrap_or(J::Null)
 }
@@ -388,7 +408,7 @@ fn render_group(table: &OrmTable, where_: &Map<String, J>, q: &str, params: &mut
                             let ph = vec!["?"; list.len()].join(", ");
                             parts.push(format!("{ident} IN ({ph})"));
                             for v in list {
-                                params.push(to_param(v)?);
+                                params.push(to_param_as(table, col, v)?);
                             }
                         }
                     } else if op == "ne" && value.is_null() {
@@ -397,13 +417,13 @@ fn render_group(table: &OrmTable, where_: &Map<String, J>, q: &str, params: &mut
                         parts.push(format!("{ident} IS NULL"));
                     } else {
                         parts.push(format!("{ident} {sop} ?"));
-                        params.push(to_param(value)?);
+                        params.push(to_param_as(table, col, value)?);
                     }
                 }
             }
             other => {
                 parts.push(format!("{ident} = ?"));
-                params.push(to_param(other)?);
+                params.push(to_param_as(table, col, other)?);
             }
         }
     }
@@ -486,9 +506,20 @@ fn compile_where(table: &OrmTable, where_: Option<&J>, qualify: Option<&str>) ->
 }
 
 /// ` ORDER BY ... LIMIT n OFFSET m` from `orderBy`/`limit`/`offset` keys.
-fn compile_tail(table: &OrmTable, op: &Map<String, J>, qualify: Option<&str>) -> Result<String> {
+///
+/// Returns `(tail, select_prefix)` — the prefix is `"TOP (n) "` on SQL
+/// Server (which has no LIMIT); splice it right after `SELECT `. On SQL
+/// Server an `offset` renders as `OFFSET .. ROWS FETCH ..` (2012+) and
+/// requires `orderBy`.
+fn compile_tail(
+    table: &OrmTable,
+    op: &Map<String, J>,
+    qualify: Option<&str>,
+    flavor: SqlFlavor,
+) -> Result<(String, String)> {
     let mut tail = String::new();
     let q = qualify.map(|t| format!("{t}.")).unwrap_or_default();
+    let mut has_order = false;
     if let Some(ob) = op.get("orderBy").and_then(J::as_object) {
         let mut frags: Vec<String> = Vec::new();
         for (col, dir) in ob {
@@ -502,15 +533,44 @@ fn compile_tail(table: &OrmTable, op: &Map<String, J>, qualify: Option<&str>) ->
         }
         if !frags.is_empty() {
             tail.push_str(&format!(" ORDER BY {}", frags.join(", ")));
+            has_order = true;
         }
     }
-    if let Some(n) = op.get("limit").and_then(J::as_f64) {
-        tail.push_str(&format!(" LIMIT {}", n.floor() as i64));
+    let limit = op.get("limit").and_then(J::as_f64).map(|n| n.floor() as i64);
+    let offset = op.get("offset").and_then(J::as_f64).map(|n| n.floor() as i64);
+    let mut prefix = String::new();
+    if flavor == SqlFlavor::MsSql {
+        if let Some(off) = offset {
+            if !has_order {
+                return Err(orm_err(
+                    "SQL Server requires `orderBy` together with `offset` (OFFSET .. FETCH)",
+                ));
+            }
+            tail.push_str(&format!(" OFFSET {off} ROWS"));
+            if let Some(l) = limit {
+                tail.push_str(&format!(" FETCH NEXT {l} ROWS ONLY"));
+            }
+        } else if let Some(l) = limit {
+            prefix = format!("TOP ({l}) ");
+        }
+    } else {
+        if let Some(l) = limit {
+            tail.push_str(&format!(" LIMIT {l}"));
+        }
+        if let Some(off) = offset {
+            tail.push_str(&format!(" OFFSET {off}"));
+        }
     }
-    if let Some(n) = op.get("offset").and_then(J::as_f64) {
-        tail.push_str(&format!(" OFFSET {}", n.floor() as i64));
+    Ok((tail, prefix))
+}
+
+/// Splice a `TOP (n) ` prefix into a `SELECT ...` head (no-op when empty).
+fn with_top(select_sql: String, prefix: &str) -> String {
+    if prefix.is_empty() {
+        select_sql
+    } else {
+        select_sql.replacen("SELECT ", &format!("SELECT {prefix}"), 1)
     }
-    Ok(tail)
 }
 
 /// Keys of `data` that are real columns (relation names are skipped, so rows
@@ -599,7 +659,7 @@ impl Orm {
                 let mut params = Vec::new();
                 for k in &keys {
                     idents.push(table.ident(k)?.to_string());
-                    params.push(to_param(&data[k.as_str()])?);
+                    params.push(to_param_as(table, k, &data[k.as_str()])?);
                 }
                 let sql = format!(
                     "INSERT INTO {} ({}) VALUES ({})",
@@ -659,7 +719,7 @@ impl Orm {
                             )));
                         }
                         for k in &keys {
-                            params.push(to_param(&r[k.as_str()])?);
+                            params.push(to_param_as(table, k, &r[k.as_str()])?);
                         }
                     }
                     affected += self.client.execute(&sql, params).await? as i64;
@@ -679,7 +739,7 @@ impl Orm {
                 let mut params = Vec::new();
                 for k in &sets {
                     set_frags.push(format!("{} = ?", table.ident(k)?));
-                    params.push(to_param(&data[k.as_str()])?);
+                    params.push(to_param_as(table, k, &data[k.as_str()])?);
                 }
                 let (clause, wparams) = compile_where(table, obj.get("where"), None)?;
                 params.extend(wparams);
@@ -745,7 +805,8 @@ impl Orm {
             self.find_many_joined(obj, table, join).await?
         } else {
             let (clause, params) = compile_where(table, obj.get("where"), None)?;
-            let sql = format!("{}{}{}", table.select_all(), clause, compile_tail(table, obj, None)?);
+            let (tail, top) = compile_tail(table, obj, None, self.client.flavor())?;
+            let sql = format!("{}{}{}", with_top(table.select_all(), &top), clause, tail);
             let batch = self.client.query(&sql, params).await?;
             materialize(&batch, table)
         };
@@ -801,13 +862,14 @@ impl Orm {
         }
 
         let (clause, params) = compile_where(table, obj.get("where"), Some(&table.name))?;
+        let (tail, top) = compile_tail(table, obj, Some(&table.name), self.client.flavor())?;
         let sql = format!(
-            "SELECT {} FROM {} {}{}{}",
+            "SELECT {top}{} FROM {} {}{}{}",
             selects.join(", "),
             table.name,
             joins.join(" "),
             clause,
-            compile_tail(table, obj, Some(&table.name))?
+            tail
         );
         let batch = self.client.query(&sql, params).await?;
 
@@ -896,14 +958,14 @@ impl Orm {
                     let mut params: Vec<Value> = Vec::new();
                     let clause = if single {
                         for t in chunk {
-                            params.push(to_param(&t[0])?);
+                            params.push(to_param_as(target, &rel.foreign_columns[0], &t[0])?);
                         }
                         format!("{} IN ({})", fidents[0], vec!["?"; chunk.len()].join(", "))
                     } else {
                         let row_ph = format!("({})", vec!["?"; fidents.len()].join(", "));
                         for t in chunk {
-                            for v in t {
-                                params.push(to_param(v)?);
+                            for (fi, v) in t.iter().enumerate() {
+                                params.push(to_param_as(target, &rel.foreign_columns[fi], v)?);
                             }
                         }
                         format!(
@@ -994,9 +1056,11 @@ impl Orm {
         }
         let mut selects = by_idents.clone();
         let mut agg_expr: HashMap<String, String> = HashMap::new();
+        let mut agg_ty: HashMap<String, ColType> = HashMap::new();
         if obj.get("count").and_then(J::as_bool).unwrap_or(false) {
             selects.push("COUNT(*) AS _count".into());
             agg_expr.insert("_count".into(), "COUNT(*)".into());
+            agg_ty.insert("_count".into(), ColType::Int);
         }
         for f in ["sum", "avg", "min", "max"] {
             if let Some(cols) = obj.get(f).and_then(J::as_array) {
@@ -1007,7 +1071,15 @@ impl Orm {
                     let expr = format!("{}({})", f.to_uppercase(), table.ident(c)?);
                     let alias = format!("_{f}_{c}");
                     selects.push(format!("{expr} AS {alias}"));
-                    agg_expr.insert(alias, expr);
+                    agg_expr.insert(alias.clone(), expr);
+                    // AVG is fractional whatever the input; the others keep
+                    // the column's own type.
+                    let ty = if f == "avg" {
+                        ColType::Float
+                    } else {
+                        table.column(c).map(|col| col.ty).unwrap_or(ColType::Float)
+                    };
+                    agg_ty.insert(alias, ty);
                 }
             }
         }
@@ -1038,7 +1110,7 @@ impl Orm {
                         }
                     };
                     having_parts.push(format!("{expr} {sop} ?"));
-                    params.push(to_param(value)?);
+                    params.push(coerce(agg_ty.get(alias.as_str()).copied(), to_param(value)?));
                 }
             }
         }
@@ -1070,17 +1142,36 @@ impl Orm {
         }
 
         let mut limit_clause = String::new();
-        if let Some(n) = obj.get("limit").and_then(J::as_f64) {
-            limit_clause.push_str(" LIMIT ?");
-            params.push(Value::Int(n.floor() as i64));
-        }
-        if let Some(n) = obj.get("offset").and_then(J::as_f64) {
-            limit_clause.push_str(" OFFSET ?");
-            params.push(Value::Int(n.floor() as i64));
+        let mut top = String::new();
+        let limit = obj.get("limit").and_then(J::as_f64).map(|n| n.floor() as i64);
+        let offset = obj.get("offset").and_then(J::as_f64).map(|n| n.floor() as i64);
+        if self.client.flavor() == SqlFlavor::MsSql {
+            if let Some(off) = offset {
+                if order_clause.is_empty() {
+                    return Err(orm_err(
+                        "SQL Server requires `orderBy` together with `offset` (OFFSET .. FETCH)",
+                    ));
+                }
+                limit_clause.push_str(&format!(" OFFSET {off} ROWS"));
+                if let Some(l) = limit {
+                    limit_clause.push_str(&format!(" FETCH NEXT {l} ROWS ONLY"));
+                }
+            } else if let Some(l) = limit {
+                top = format!("TOP ({l}) ");
+            }
+        } else {
+            if let Some(l) = limit {
+                limit_clause.push_str(" LIMIT ?");
+                params.push(Value::Int(l));
+            }
+            if let Some(off) = offset {
+                limit_clause.push_str(" OFFSET ?");
+                params.push(Value::Int(off));
+            }
         }
 
         let sql = format!(
-            "SELECT {} FROM {}{} GROUP BY {}{}{}{}",
+            "SELECT {top}{} FROM {}{} GROUP BY {}{}{}{}",
             selects.join(", "),
             table.name,
             where_clause,
