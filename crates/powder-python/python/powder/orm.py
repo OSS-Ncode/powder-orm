@@ -182,17 +182,23 @@ class PowderTable(Generic[T]):
             raise PowderError(f"unknown column `{column}`", self.meta.table, site)
         return f"{qualify}.{ident}" if qualify else ident
 
-    def _compile_where(
+    def _render_group(
         self,
-        where: Optional[Mapping[str, Any]],
+        where: Mapping[str, Any],
         site: Optional[str],
         qualify: Optional[str] = None,
     ) -> tuple[str, list[Any]]:
-        if not where:
-            return "", []
+        """Render a where group to a SQL fragment (no WHERE, no outer parens).
+
+        Supports Prisma-style ``AND``/``OR``/``NOT`` logical keys nested to any
+        depth; sub-groups are parenthesized to preserve precedence. Returns an
+        empty fragment when the group carries no effective predicate.
+        """
         parts: list[str] = []
         params: list[Any] = []
         for column, cond in where.items():
+            if column in ("AND", "OR", "NOT"):
+                continue
             ident = self._ident(column, site, qualify)
             if cond is None:
                 parts.append(f"{ident} IS NULL")
@@ -222,8 +228,48 @@ class PowderTable(Generic[T]):
             else:
                 parts.append(f"{ident} = ?")
                 params.append(cond)
-        clause = f" WHERE {' AND '.join(parts)}" if parts else ""
-        return clause, params
+
+        def as_list(v: Any) -> list:
+            return v if isinstance(v, list) else [v]
+
+        if "AND" in where:
+            for w in as_list(where["AND"]):
+                frag, p = self._render_group(w, site, qualify)
+                if frag:
+                    parts.append(f"({frag})")
+                    params.extend(p)
+        if "OR" in where:
+            subs = where["OR"]
+            if len(subs) == 0:
+                parts.append("1 = 0")  # OR of nothing matches nothing
+            else:
+                rendered: list[str] = []
+                for w in subs:
+                    frag, p = self._render_group(w, site, qualify)
+                    if frag:
+                        rendered.append(f"({frag})")
+                        params.extend(p)
+                if rendered:
+                    parts.append("(" + " OR ".join(rendered) + ")")
+        if "NOT" in where:
+            for w in as_list(where["NOT"]):
+                frag, p = self._render_group(w, site, qualify)
+                if frag:
+                    parts.append(f"NOT ({frag})")
+                    params.extend(p)
+
+        return " AND ".join(parts), params
+
+    def _compile_where(
+        self,
+        where: Optional[Mapping[str, Any]],
+        site: Optional[str],
+        qualify: Optional[str] = None,
+    ) -> tuple[str, list[Any]]:
+        if not where:
+            return "", []
+        frag, params = self._render_group(where, site, qualify)
+        return (f" WHERE {frag}", params) if frag else ("", [])
 
     def _compile_tail(
         self,
@@ -490,6 +536,91 @@ class PowderTable(Generic[T]):
         """First row matching, or ``None``."""
         rows = await self.find_many(where=where, order_by=order_by, limit=1)
         return rows[0] if rows else None
+
+    async def group_by(
+        self,
+        *,
+        by: list[str],
+        where: Optional[Mapping[str, Any]] = None,
+        count: bool = False,
+        sum: Optional[list[str]] = None,
+        avg: Optional[list[str]] = None,
+        min: Optional[list[str]] = None,
+        max: Optional[list[str]] = None,
+        having: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        order_by: Optional[Mapping[str, str]] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> list[dict]:
+        """GROUP BY with aggregates; returns plain rows (not model objects).
+
+        Aggregates alias as ``_count``, ``_sum_<col>``, ``_avg_<col>``,
+        ``_min_<col>``, ``_max_<col>``. ``having`` filters on those aggregates
+        (operators ``eq ne gt gte lt lte``); ``order_by`` may use an aggregate
+        alias or a group column.
+        """
+        site = _call_site()
+        if not by:
+            raise PowderError("groupBy requires at least one column", self.meta.table, site)
+        by_idents = [self._ident(c, site) for c in by]
+        selects = list(by_idents)
+        agg_expr: dict[str, str] = {}
+        if count:
+            selects.append("COUNT(*) AS _count")
+            agg_expr["_count"] = "COUNT(*)"
+        for fn, cols in (("sum", sum), ("avg", avg), ("min", min), ("max", max)):
+            for c in cols or []:
+                expr = f"{fn.upper()}({self._ident(c, site)})"
+                alias = f"_{fn}_{c}"
+                selects.append(f"{expr} AS {alias}")
+                agg_expr[alias] = expr
+
+        where_clause, params = self._compile_where(where, site)
+
+        having_ops = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+        having_parts: list[str] = []
+        having_params: list[Any] = []
+        for alias, cond in (having or {}).items():
+            expr = agg_expr.get(alias)
+            if expr is None:
+                raise PowderError(
+                    f"having references unknown aggregate `{alias}`", self.meta.table, site
+                )
+            for op, value in cond.items():
+                sql_op = having_ops.get(op)
+                if sql_op is None:
+                    raise PowderError(
+                        "having supports only comparison operators", self.meta.table, site
+                    )
+                having_parts.append(f"{expr} {sql_op} ?")
+                having_params.append(value)
+        having_clause = f" HAVING {' AND '.join(having_parts)}" if having_parts else ""
+
+        order_clause = ""
+        if order_by:
+            order_parts = []
+            for key, direction in order_by.items():
+                target = key if key in agg_expr else self._ident(key, site)
+                order_parts.append(
+                    f"{target} {'DESC' if str(direction).lower() == 'desc' else 'ASC'}"
+                )
+            order_clause = f" ORDER BY {', '.join(order_parts)}"
+
+        limit_clause = ""
+        tail_params: list[Any] = []
+        if limit is not None:
+            limit_clause += " LIMIT ?"
+            tail_params.append(limit)
+        if offset is not None:
+            limit_clause += " OFFSET ?"
+            tail_params.append(offset)
+
+        sql = (
+            f"SELECT {', '.join(selects)} FROM {self.meta.table}{where_clause}"
+            f" GROUP BY {', '.join(by_idents)}{having_clause}{order_clause}{limit_clause}"
+        )
+        batch = await self._query(sql, params + having_params + tail_params, site)
+        return batch.to_rows()
 
     def _data_dict(self, data: Any) -> dict[str, Any]:
         if dataclasses.is_dataclass(data) and not isinstance(data, type):

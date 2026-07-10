@@ -761,3 +761,88 @@ test("finder: chained where() combines a column filter with an OR group across c
     .all();
   assert.deepEqual(rows.map((r) => r.id), [1, 2]);
 });
+
+// --- groupBy / having -------------------------------------------------------
+
+interface OrderRow { id: number; user_id: number; amount: number; }
+const ORDERS_META: TableMeta = {
+  table: "orders",
+  columns: [
+    { name: "id", type: "int", primaryKey: true },
+    { name: "user_id", type: "int" },
+    { name: "amount", type: "float" },
+  ],
+  sql: {
+    selectAll: "SELECT id, user_id, amount FROM orders",
+    insert: "INSERT INTO orders (id, user_id, amount) VALUES (?, ?, ?)",
+    countAll: "SELECT COUNT(*) AS n FROM orders",
+    deleteAll: "DELETE FROM orders",
+    ident: { id: "id", user_id: "user_id", amount: "amount" },
+  },
+  relations: [],
+};
+
+async function seedOrders(): Promise<PowderTable<OrderRow>> {
+  const db = await Client.connect("sqlite::memory:");
+  await db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)");
+  const t = new PowderTable<OrderRow>(db, ORDERS_META);
+  await t.createMany([
+    { id: 1, user_id: 1, amount: 30 },
+    { id: 2, user_id: 1, amount: 80 },
+    { id: 3, user_id: 2, amount: 40 },
+    { id: 4, user_id: 2, amount: 5 },
+  ]);
+  return t;
+}
+
+test("groupBy: count + sum per group", async () => {
+  const orders = await seedOrders();
+  const rows = await orders.groupBy({
+    by: ["user_id"],
+    count: true,
+    sum: ["amount"],
+    orderBy: { user_id: "asc" },
+  });
+  assert.deepEqual(rows, [
+    { user_id: 1, _count: 2, _sum_amount: 110 },
+    { user_id: 2, _count: 2, _sum_amount: 45 },
+  ]);
+});
+
+test("groupBy: having filters on the aggregate expression, orderBy alias", async () => {
+  const orders = await seedOrders();
+  const rows = await orders.groupBy({
+    by: ["user_id"],
+    sum: ["amount"],
+    having: { _sum_amount: { gt: 100 } },
+    orderBy: { _sum_amount: "desc" },
+  });
+  assert.deepEqual(rows, [{ user_id: 1, _sum_amount: 110 }]);
+});
+
+test("groupBy: where combines with having (param order)", async () => {
+  const orders = await seedOrders();
+  const rows = await orders.groupBy({
+    by: ["user_id"],
+    where: { amount: { gte: 30 } },
+    sum: ["amount"],
+    having: { _sum_amount: { gt: 60 } },
+    orderBy: { user_id: "asc" },
+  });
+  assert.deepEqual(rows, [{ user_id: 1, _sum_amount: 110 }]);
+});
+
+test("groupBy: errors on empty by, unknown column, bad having op", async () => {
+  const orders = await seedOrders();
+  await assert.rejects(() => orders.groupBy({ by: [] }), /at least one column/);
+  await assert.rejects(() => orders.groupBy({ by: ["nope" as never] }), /unknown column `nope`/);
+  await assert.rejects(
+    () =>
+      orders.groupBy({
+        by: ["user_id"],
+        sum: ["amount"],
+        having: { _sum_amount: { like: 1 } as never },
+      }),
+    /comparison operators/,
+  );
+});

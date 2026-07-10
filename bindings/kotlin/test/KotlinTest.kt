@@ -117,6 +117,28 @@ fun main(args: Array<String>) {
         // Raw escape hatch still available, typed column access included.
         val batch = db.query("SELECT COUNT(*) AS n FROM users WHERE active = ?", 1L)
         check(batch.column("n").getLong(0) == 3L, "raw query escape hatch")
+
+        // -- groupBy / having --
+        db.execute("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount REAL)")
+        db.from("orders").insert("id" to 1, "user_id" to 1, "amount" to 30.0)
+        db.from("orders").insert("id" to 2, "user_id" to 1, "amount" to 80.0)
+        db.from("orders").insert("id" to 3, "user_id" to 2, "amount" to 40.0)
+        db.from("orders").insert("id" to 4, "user_id" to 2, "amount" to 5.0)
+
+        val g = db.from("orders").groupBy(
+            by = listOf("user_id"), count = true, sum = listOf("amount"),
+            orderBy = mapOf("user_id" to Order.ASC),
+        )
+        check(g.size == 2, "groupBy size")
+        check((g[0]["_count"] as Long) == 2L, "group 1 count")
+        check((g[0]["_sum_amount"] as Double) == 110.0, "group 1 sum")
+
+        val h = db.from("orders").groupBy(
+            by = listOf("user_id"), sum = listOf("amount"),
+            having = mapOf("_sum_amount" to (">" to 100.0)),
+            orderBy = mapOf("_sum_amount" to Order.DESC),
+        )
+        check(h.size == 1 && (h[0]["user_id"] as Long) == 1L, "having filter")
     }
 
     println("kotlin binding OK ($checks checks)")

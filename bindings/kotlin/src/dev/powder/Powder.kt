@@ -159,6 +159,65 @@ class TableRef internal constructor(
         return where(c!!).first()
     }
 
+    /** GROUP BY with aggregates; returns plain rows. Aliases: `_count`,
+     *  `_sum_<col>`, `_avg_<col>`, `_min_<col>`, `_max_<col>`. `having` maps an
+     *  alias to (op, value) with op in `=  !=  >  >=  <  <=`; `orderBy` may use
+     *  an alias or a group column. Any where() set on this ref is applied. */
+    fun groupBy(
+        by: List<String>,
+        count: Boolean = false,
+        sum: List<String> = emptyList(),
+        avg: List<String> = emptyList(),
+        min: List<String> = emptyList(),
+        max: List<String> = emptyList(),
+        having: Map<String, Pair<String, Any?>> = emptyMap(),
+        orderBy: Map<String, Order> = emptyMap(),
+        limit: Long? = null,
+        offset: Long? = null,
+    ): List<Map<String, Any?>> {
+        if (by.isEmpty()) throw PowderDslException("groupBy requires at least one column")
+        val byIdents = by.map(::ident)
+        val selects = byIdents.toMutableList()
+        val aggExpr = LinkedHashMap<String, String>()
+        if (count) {
+            selects.add("COUNT(*) AS _count")
+            aggExpr["_count"] = "COUNT(*)"
+        }
+        for ((fn, cols) in listOf("sum" to sum, "avg" to avg, "min" to min, "max" to max)) {
+            for (c in cols) {
+                val expr = "${fn.uppercase()}(${ident(c)})"
+                val alias = "_${fn}_$c"
+                selects.add("$expr AS $alias")
+                aggExpr[alias] = expr
+            }
+        }
+        val (whereSql, whereParams) = whereClause()
+        val havingOps = mapOf("=" to "=", "!=" to "<>", ">" to ">", ">=" to ">=", "<" to "<", "<=" to "<=")
+        val havingParts = mutableListOf<String>()
+        val havingParams = mutableListOf<Any?>()
+        for ((alias, opv) in having) {
+            val expr = aggExpr[alias]
+                ?: throw PowderDslException("having references unknown aggregate `$alias`")
+            val sqlOp = havingOps[opv.first]
+                ?: throw PowderDslException("having supports only comparison operators")
+            havingParts.add("$expr $sqlOp ?")
+            havingParams.add(opv.second)
+        }
+        val havingSql = if (havingParts.isEmpty()) "" else " HAVING ${havingParts.joinToString(" AND ")}"
+        val orderSql = if (orderBy.isEmpty()) "" else " ORDER BY " + orderBy.entries.joinToString(", ") { (k, d) ->
+            val target = if (aggExpr.containsKey(k)) k else ident(k)
+            "$target ${if (d == Order.DESC) "DESC" else "ASC"}"
+        }
+        var tailSql = ""
+        val tailParams = mutableListOf<Any?>()
+        if (limit != null) { tailSql += " LIMIT ?"; tailParams.add(limit) }
+        if (offset != null) { tailSql += " OFFSET ?"; tailParams.add(offset) }
+        val sql = "SELECT ${selects.joinToString(", ")} FROM ${ident(table)}$whereSql" +
+            " GROUP BY ${byIdents.joinToString(", ")}$havingSql$orderSql$tailSql"
+        val allParams = (whereParams + havingParams + tailParams).toTypedArray()
+        return client.query(sql, *allParams).toRows()
+    }
+
     // -- writes ---------------------------------------------------------------
 
     /** INSERT one row: `insert("id" to 1, "name" to "alice")`. */

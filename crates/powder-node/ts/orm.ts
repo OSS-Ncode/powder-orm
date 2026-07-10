@@ -110,6 +110,25 @@ export interface FindOptions<T, Inc extends IncludeMap = IncludeMap> {
   join?: { [K in keyof Inc]?: boolean };
 }
 
+/** Options for {@link PowderTable.groupBy}. Aggregates produce aliased columns:
+ *  `count`→`_count`, `sum[c]`→`_sum_<c>`, `avg`/`min`/`max` likewise. */
+export interface GroupByOptions<T> {
+  by: (keyof T & string)[];
+  where?: Where<T>;
+  count?: boolean;
+  sum?: (keyof T & string)[];
+  avg?: (keyof T & string)[];
+  min?: (keyof T & string)[];
+  max?: (keyof T & string)[];
+  having?: Record<
+    string,
+    { eq?: number; ne?: number; gt?: number; gte?: number; lt?: number; lte?: number }
+  >;
+  orderBy?: Record<string, "asc" | "desc">;
+  limit?: number;
+  offset?: number;
+}
+
 /** A database error mapped back to the caller's source location. */
 export class PowderError extends Error {
   /** The SQL that failed. */
@@ -848,6 +867,85 @@ export class PowderTable<T extends object, Inc extends IncludeMap = IncludeMap> 
     const v = batch.column("v")?.get(0);
     if (v === null || v === undefined) return null;
     return typeof v === "bigint" ? Number(v) : (v as number);
+  }
+
+  /** GROUP BY with aggregates; returns plain rows (not the model type).
+   *  HAVING renders the aggregate expression (portable); ORDER BY may use an
+   *  aggregate alias (`_count`, `_sum_<col>`, …) or a group column. */
+  async groupBy(opts: GroupByOptions<T>): Promise<Record<string, Scalar>[]> {
+    const site = callSite();
+    if (!opts.by || opts.by.length === 0) {
+      throw new PowderError("groupBy requires at least one column", this.meta.table, site);
+    }
+    const ident = (c: string): string => {
+      const bare = this.meta.sql.ident[c];
+      if (!bare) throw new PowderError(`unknown column \`${c}\``, this.meta.table, site);
+      return bare;
+    };
+    const byIdents = opts.by.map(ident);
+    const selects = [...byIdents];
+    const aggExpr: Record<string, string> = {};
+    if (opts.count) {
+      selects.push("COUNT(*) AS _count");
+      aggExpr["_count"] = "COUNT(*)";
+    }
+    const addAgg = (fn: "sum" | "avg" | "min" | "max", cols?: string[]): void => {
+      for (const c of cols ?? []) {
+        const expr = `${fn.toUpperCase()}(${ident(c)})`;
+        const alias = `_${fn}_${c}`;
+        selects.push(`${expr} AS ${alias}`);
+        aggExpr[alias] = expr;
+      }
+    };
+    addAgg("sum", opts.sum);
+    addAgg("avg", opts.avg);
+    addAgg("min", opts.min);
+    addAgg("max", opts.max);
+
+    const { clause: whereClause, params: whereParams } = this.compileWhere(opts.where);
+
+    const HAVING_OPS: Record<string, string> = {
+      eq: "=", ne: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=",
+    };
+    const havingParts: string[] = [];
+    const havingParams: Param[] = [];
+    for (const [alias, cond] of Object.entries(opts.having ?? {})) {
+      const expr = aggExpr[alias];
+      if (!expr) throw new PowderError(`having references unknown aggregate \`${alias}\``, this.meta.table, site);
+      for (const [op, value] of Object.entries(cond as Record<string, number>)) {
+        const sqlOp = HAVING_OPS[op];
+        if (!sqlOp) throw new PowderError(`having supports only comparison operators, got \`${op}\``, this.meta.table, site);
+        havingParts.push(`${expr} ${sqlOp} ?`);
+        havingParams.push(value as Param);
+      }
+    }
+    const havingClause = havingParts.length ? ` HAVING ${havingParts.join(" AND ")}` : "";
+
+    let orderClause = "";
+    if (opts.orderBy) {
+      const parts = Object.entries(opts.orderBy).map(([key, dir]) => {
+        const target = aggExpr[key] ? key : ident(key);
+        return `${target} ${String(dir).toLowerCase() === "desc" ? "DESC" : "ASC"}`;
+      });
+      if (parts.length) orderClause = ` ORDER BY ${parts.join(", ")}`;
+    }
+
+    let limitClause = "";
+    const tailParams: Param[] = [];
+    if (opts.limit !== undefined) {
+      limitClause += " LIMIT ?";
+      tailParams.push(opts.limit);
+    }
+    if (opts.offset !== undefined) {
+      limitClause += " OFFSET ?";
+      tailParams.push(opts.offset);
+    }
+
+    const sql =
+      `SELECT ${selects.join(", ")} FROM ${this.meta.table}${whereClause}` +
+      ` GROUP BY ${byIdents.join(", ")}${havingClause}${orderClause}${limitClause}`;
+    const batch = await this.runQuery(sql, [...whereParams, ...havingParams, ...tailParams], site);
+    return batch.toRows();
   }
 }
 
