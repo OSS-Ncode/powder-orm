@@ -19,19 +19,37 @@ FEED_PATH = "/Users/server/apps/commit-feed/feed.json"
 MAX_ENTRIES = 50
 DIFF_TRUNCATE = 4000
 
-LANG_NAMES = {
-    "ko": "한국어",
-    "en": "English",
-    "zh": "简体中文",
-    "ja": "日本語",
+# 지시문 자체를 대상 언어로 써야 작은 모델이 그 언어로 답한다 — 한국어
+# 지시문에 "영어로 답해"만 끼워넣으면 한국어로 답하는 경우가 많았음
+# (qwen3:8b 실측 확인됨).
+PROMPTS = {
+    "ko": (
+        "다음은 git 커밋 메시지와 diff입니다. 한국어로 2~3문장으로 무엇이 "
+        "왜 바뀌었는지 자연어로 요약해줘. 코드를 그대로 인용하지 말고, "
+        "반드시 한국어로만 답해."
+    ),
+    "en": (
+        "Below is a git commit message and diff. Summarize in 2-3 sentences, "
+        "in natural language, what changed and why. Do not quote code "
+        "verbatim. Respond only in English."
+    ),
+    "zh": (
+        "以下是 git 提交信息和 diff。请用 2-3 句话，以自然语言概括发生了"
+        "什么变化以及原因，不要直接引用代码。请只用简体中文回答。"
+    ),
+    "ja": (
+        "以下は git のコミットメッセージと diff です。2〜3文の自然な文章で、"
+        "何がなぜ変更されたのかを要約してください。コードをそのまま引用"
+        "しないでください。必ず日本語のみで答えてください。"
+    ),
 }
+LANG_NAMES = {"ko": "한국어", "en": "English", "zh": "简体中文", "ja": "日本語"}
 
 
 def summarize(lang, message, diff):
     prompt = (
-        f"다음은 git 커밋 메시지와 diff입니다. {LANG_NAMES[lang]}로 2~3문장으로 "
-        f"무엇이 왜 바뀌었는지 자연어로 요약해줘. 코드를 그대로 인용하지 마.\n\n"
-        f"커밋 메시지:\n{message}\n\ndiff:\n{diff[:DIFF_TRUNCATE]}"
+        f"{PROMPTS[lang]}\n\n"
+        f"commit message:\n{message}\n\ndiff:\n{diff[:DIFF_TRUNCATE]}"
     )
     payload = json.dumps(
         {"model": MODEL, "prompt": prompt, "stream": False}
