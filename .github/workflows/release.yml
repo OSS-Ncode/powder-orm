@@ -70,8 +70,10 @@ jobs:
           - { host: macos-latest, target: aarch64-apple-darwin, label: macos-arm64 }
           - { host: macos-15-intel, target: x86_64-apple-darwin, label: macos-x64 }
           - { host: ubuntu-latest, target: x86_64-unknown-linux-gnu, label: linux-x64 }
+          - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, label: linux-arm64 }
+          - { host: ubuntu-latest, target: x86_64-unknown-linux-musl, label: linux-x64-musl }
           - { host: windows-latest, target: x86_64-pc-windows-msvc, label: windows-x64 }
-          # Extend later: aarch64-unknown-linux-gnu, *-musl, win arm64.
+          - { host: windows-11-arm, target: aarch64-pc-windows-msvc, label: windows-arm64 }
     runs-on: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +81,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build powder-ffi + powder-java
         run: cargo build -p powder-ffi -p powder-java --release --target ${{ matrix.target }}
       - name: Package libraries
@@ -109,7 +114,10 @@ jobs:
           - { host: macos-latest, target: aarch64-apple-darwin }
           - { host: macos-15-intel, target: x86_64-apple-darwin }
           - { host: windows-latest, target: x86_64-pc-windows-msvc }
+          - { host: windows-11-arm, target: aarch64-pc-windows-msvc }
           - { host: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { host: ubuntu-latest, target: x86_64-unknown-linux-musl }
     runs-on: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +127,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "crates/powder-node"
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -142,10 +153,13 @@ jobs:
       matrix:
         include:
           - { host: ubuntu-latest, target: x86_64, manylinux: auto }
-          - { host: ubuntu-latest, target: aarch64, manylinux: auto }
+          - { host: ubuntu-24.04-arm, target: aarch64, manylinux: auto }
+          - { host: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2 }
+          - { host: ubuntu-24.04-arm, target: aarch64, manylinux: musllinux_1_2 }
           - { host: macos-latest, target: aarch64, manylinux: "" }
           - { host: macos-15-intel, target: x86_64, manylinux: "" }
           - { host: windows-latest, target: x64, manylinux: "" }
+          - { host: windows-11-arm, target: aarch64, manylinux: "" }
     runs-on: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@v4
@@ -156,7 +170,7 @@ jobs:
           args: --release --out dist --manifest-path crates/powder-python/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.host }}-${{ matrix.target }}
+          name: wheel-${{ matrix.host }}-${{ matrix.target }}-${{ matrix.manylinux || 'native' }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -217,6 +231,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Stage distribution README into each crate
+        run: |
+          cp README.dist.md crates/powder-core/README.md
+          cp README.dist.md crates/powder-cli/README.md
       # OIDC (default). Skipped on the very first publish, when the crate does
       # not exist yet and can't have a trusted publisher — set FIRST_PUBLISH=true
       # + secret CARGO_REGISTRY_TOKEN for that one run, then remove the variable.
@@ -264,6 +282,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ vars.FIRST_PUBLISH == 'true' && secrets.NPM_TOKEN || '' }}
         run: |
           npm install
+          cp ../../README.dist.md README.md   # npm reads README.md from the package dir
           npx tsc -p tsconfig.json
           npx napi artifacts --dir ../../artifacts
           npx napi prepublish -t npm --skip-gh-release
@@ -312,7 +331,7 @@ jobs:
         shell: bash
         run: |
           base=bindings/csharp/Powder/runtimes
-          declare -A RID=( [macos-arm64]=osx-arm64 [macos-x64]=osx-x64 [linux-x64]=linux-x64 [windows-x64]=win-x64 )
+          declare -A RID=( [macos-arm64]=osx-arm64 [macos-x64]=osx-x64 [linux-x64]=linux-x64 [linux-arm64]=linux-arm64 [linux-x64-musl]=linux-musl-x64 [windows-x64]=win-x64 [windows-arm64]=win-arm64 )
           for label in "${!RID[@]}"; do
             tb="native/native-$label/powder-native-$label.tar.gz"
             [ -f "$tb" ] || continue

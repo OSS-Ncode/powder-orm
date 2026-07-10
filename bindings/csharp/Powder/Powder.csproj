@@ -27,7 +27,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="../README.md" Pack="true" PackagePath="\" />
+    <None Include="../../../README.dist.md" Pack="true" PackagePath="\README.md" />
   </ItemGroup>
 
   <!-- Native powder_ffi libraries, one per runtime identifier. CI builds the
@@ -37,8 +37,10 @@
        Missing files are skipped so a local `dotnet build` without natives works. -->
   <ItemGroup>
     <None Include="runtimes/win-x64/native/powder_ffi.dll" Condition="Exists('runtimes/win-x64/native/powder_ffi.dll')" Pack="true" PackagePath="runtimes/win-x64/native/" />
+    <None Include="runtimes/win-arm64/native/powder_ffi.dll" Condition="Exists('runtimes/win-arm64/native/powder_ffi.dll')" Pack="true" PackagePath="runtimes/win-arm64/native/" />
     <None Include="runtimes/linux-x64/native/libpowder_ffi.so" Condition="Exists('runtimes/linux-x64/native/libpowder_ffi.so')" Pack="true" PackagePath="runtimes/linux-x64/native/" />
     <None Include="runtimes/linux-arm64/native/libpowder_ffi.so" Condition="Exists('runtimes/linux-arm64/native/libpowder_ffi.so')" Pack="true" PackagePath="runtimes/linux-arm64/native/" />
+    <None Include="runtimes/linux-musl-x64/native/libpowder_ffi.so" Condition="Exists('runtimes/linux-musl-x64/native/libpowder_ffi.so')" Pack="true" PackagePath="runtimes/linux-musl-x64/native/" />
     <None Include="runtimes/osx-x64/native/libpowder_ffi.dylib" Condition="Exists('runtimes/osx-x64/native/libpowder_ffi.dylib')" Pack="true" PackagePath="runtimes/osx-x64/native/" />
     <None Include="runtimes/osx-arm64/native/libpowder_ffi.dylib" Condition="Exists('runtimes/osx-arm64/native/libpowder_ffi.dylib')" Pack="true" PackagePath="runtimes/osx-arm64/native/" />
   </ItemGroup>

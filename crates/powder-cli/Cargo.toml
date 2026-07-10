@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Powder ORM CLI — schema management, migration, seeding, validation, and AOT code generation"
+readme = "README.md"
 
 [[bin]]
 name = "powder"

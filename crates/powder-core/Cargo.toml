@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Zero-copy columnar database engine core (Powder)"
+readme = "README.md"
 
 [features]
 default = []
