@@ -20,6 +20,7 @@ type Status = 'idle' | 'submitting' | 'success' | 'error';
 export function SupportForm({ copy }: { copy: SupportFormCopy }) {
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
+  const [honeypot, setHoneypot] = useState(false);
   const [status, setStatus] = useState<Status>('idle');
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -34,6 +35,7 @@ export function SupportForm({ copy }: { copy: SupportFormCopy }) {
           subject: 'Powder 문의',
           email,
           message,
+          botcheck: honeypot,
         }),
       });
       const data = await res.json();
@@ -54,6 +56,8 @@ export function SupportForm({ copy }: { copy: SupportFormCopy }) {
       <input
         type="checkbox"
         name="botcheck"
+        checked={honeypot}
+        onChange={(e) => setHoneypot(e.target.checked)}
         className="hidden"
         style={{ display: 'none' }}
         tabIndex={-1}

@@ -13,6 +13,11 @@ npm run start    # out/ 서빙
 로컬 개발 시 `.env.local`에 `NEXT_PUBLIC_WEB3FORMS_ACCESS_KEY`를 설정해야
 폼이 동작한다 (`.env.local`은 git에 커밋되지 않음).
 
+`NEXT_PUBLIC_*`는 Next.js가 **빌드 타임**에 값을 인라인하므로, `npm run
+build`를 돌리는 모든 환경(맥미니 자동 배포 포함, CI, 다른 머신에서의
+재빌드 등)에 이 키가 반드시 설정돼 있어야 한다. 없으면 빌드는 성공하지만
+문의 폼이 조용히 전송 실패한다 — 에러도, 경고도 없다.
+
 콘텐츠는 `content/docs/*.mdx` (한국어). 페이지 구성은 `meta.json`.
 
 주의: 이 저장소가 네트워크 드라이브에 있으면 Turbopack이 UNC 경로를
