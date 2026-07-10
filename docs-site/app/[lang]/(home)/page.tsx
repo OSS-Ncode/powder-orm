@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ArrowRight, Boxes, Gauge, ShieldCheck, FileCode2, Layers } from 'lucide-react';
+import { ArrowRight, Boxes, Gauge, Heart, ShieldCheck, FileCode2, Layers } from 'lucide-react';
 import { gitConfig } from '@/lib/shared';
 
 // lucide-react (this version) ships no brand icons, so inline the GitHub mark.
@@ -27,9 +27,13 @@ type Copy = {
   matrixHeading: string;
   langsLabel: string;
   dbsLabel: string;
+  sponsorHeading: string;
+  sponsorBody: string;
+  sponsorCta: string;
 };
 
 const GH = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
+const SPONSOR_URL = 'https://fairy.hada.io/@ncode-powder-orm';
 
 const copy: Record<string, Copy> = {
   ko: {
@@ -80,6 +84,10 @@ const copy: Record<string, Copy> = {
     matrixHeading: '지원 범위',
     langsLabel: '언어',
     dbsLabel: '데이터베이스',
+    sponsorHeading: 'Powder가 도움이 됐나요?',
+    sponsorBody:
+      'Powder는 오픈소스로 개발되고 있어요. 후원은 코어 개발과 더 많은 언어·DB 지원에 큰 힘이 됩니다.',
+    sponsorCta: '개발 후원하기',
   },
   en: {
     badge: 'Rust core · 9 languages · zero-copy',
@@ -129,6 +137,115 @@ const copy: Record<string, Copy> = {
     matrixHeading: 'What’s supported',
     langsLabel: 'Languages',
     dbsLabel: 'Databases',
+    sponsorHeading: 'Has Powder helped you?',
+    sponsorBody:
+      'Powder is developed in the open. Sponsorship directly funds core development and broader language & database support.',
+    sponsorCta: 'Sponsor the project',
+  },
+  zh: {
+    badge: 'Rust 内核 · 9 种语言 · 零拷贝',
+    title: (
+      <>
+        一个引擎，
+        <br />
+        让<span className="text-fd-primary">每种语言</span>都能快速访问数据
+      </>
+    ),
+    subtitle:
+      'Powder 是一个基于单一 Rust 内核、提供 9 种语言绑定的 ORM。查询结果以列缓冲区（PCB）一次性跨越语言边界，消除了逐行转换的开销。一个模式文件即可生成类型化模型、迁移和校验。',
+    ctaPrimary: '5 分钟上手',
+    ctaSecondary: 'GitHub',
+    installNote: '安装只需在你的包管理器里执行一行命令。',
+    valuesHeading: '为什么选择 Powder',
+    values: [
+      {
+        icon: <Gauge className="size-5" />,
+        title: '真正的快',
+        body: '在全部 5 个语言基准测试中都比该语言的原生 SQL 驱动更快。结果以单个列缓冲区传递，而不是逐行往返 FFI。',
+      },
+      {
+        icon: <Boxes className="size-5" />,
+        title: '一个内核，一个 bug',
+        body: 'TS、Python、Kotlin 的 ORM 和所有驱动共享同一个 Rust 引擎。修复一处，所有语言一起受益。',
+      },
+      {
+        icon: <FileCode2 className="size-5" />,
+        title: '模式即事实来源',
+        body: '一个 powder.schema.json 生成 DDL、迁移、漂移校验（构建门禁）、类型化模型、关系和命名查询。',
+      },
+      {
+        icon: <ShieldCheck className="size-5" />,
+        title: '诚实地失败',
+        body: '无法映射的类型、即将清空整张表的 delete、错误的占位符——都不会被静默忽略，而是抛出带有解决方案的错误。',
+      },
+    ],
+    demoHeading: '30 秒速览',
+    demoSub: '代码怎么读就怎么运行的语法，还有无 N+1 的关系加载。',
+    benchHeading: '用数字说话',
+    bench: [
+      { value: '3~4ms', label: '冷查询 @ 20 万行' },
+      { value: '~25×', label: '对比 node:sqlite' },
+      { value: '0.02ms', label: '重复查询（缓存）' },
+    ],
+    matrixHeading: '支持范围',
+    langsLabel: '语言',
+    dbsLabel: '数据库',
+    sponsorHeading: 'Powder 帮到你了吗？',
+    sponsorBody: 'Powder 是开源项目。你的赞助将直接支持内核开发以及更多语言和数据库的支持。',
+    sponsorCta: '赞助这个项目',
+  },
+  ja: {
+    badge: 'Rust コア · 9 言語 · ゼロコピー',
+    title: (
+      <>
+        ひとつのエンジンで
+        <br />
+        <span className="text-fd-primary">あらゆる言語から</span>高速なデータアクセス
+      </>
+    ),
+    subtitle:
+      'Powder は単一の Rust コアに 9 言語のバインディングを載せた ORM です。クエリ結果はカラムバッファ（PCB)として一度だけ言語境界を越えるため、行ごとの変換コストがありません。スキーマファイルひとつから型付きモデル・マイグレーション・検証が生成されます。',
+    ctaPrimary: '5 分ではじめる',
+    ctaSecondary: 'GitHub',
+    installNote: 'インストールはパッケージマネージャーの 1 行だけ。',
+    valuesHeading: 'なぜ Powder なのか',
+    values: [
+      {
+        icon: <Gauge className="size-5" />,
+        title: '本当に速い',
+        body: '5 言語すべてのベンチマークで、その言語の素の SQL ドライバより高速。行ごとに FFI を往復せず、カラムバッファを一度だけ渡すからです。',
+      },
+      {
+        icon: <Boxes className="size-5" />,
+        title: 'ひとつのコア、ひとつのバグ',
+        body: 'TS・Python・Kotlin の ORM とすべてのドライバが同じ Rust エンジンを共有。一箇所直せば、すべての言語が良くなります。',
+      },
+      {
+        icon: <FileCode2 className="size-5" />,
+        title: 'スキーマが唯一の真実',
+        body: 'powder.schema.json ひとつから DDL・マイグレーション・ドリフト検証（ビルドゲート）・型付きモデル・リレーション・名前付きクエリがすべて生成されます。',
+      },
+      {
+        icon: <ShieldCheck className="size-5" />,
+        title: '正直に失敗する',
+        body: 'マッピングできない型、全行を消しかねない delete、誤ったプレースホルダ——どれも黙って通過せず、解決策つきのエラーになります。',
+      },
+    ],
+    demoHeading: '30 秒でわかる',
+    demoSub: '読んだとおりに動く構文。N+1 のないリレーション読み込みも。',
+    benchHeading: '数字で見る性能',
+    bench: [
+      { value: '3~4ms', label: 'コールドクエリ @ 20万行' },
+      { value: '~25×', label: 'node:sqlite 比' },
+      { value: '0.02ms', label: '繰り返しクエリ（キャッシュ）' },
+    ],
+    matrixHeading: 'サポート範囲',
+    langsLabel: '言語',
+    dbsLabel: 'データベース',
+    sponsorHeading: 'Powder は役に立ちましたか？',
+    sponsorBody:
+      'Powder はオープンソースで開発されています。スポンサーはコア開発と、より多くの言語・DB サポートの大きな支えになります。',
+    sponsorCta: '開発をスポンサーする',
   },
 };
 
@@ -286,6 +403,34 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Sponsor */}
+      <section className="relative overflow-hidden border-t border-fd-border">
+        <div
+          className="pointer-events-none absolute inset-0 opacity-60"
+          style={{
+            background:
+              'radial-gradient(60% 60% at 50% 100%, color-mix(in oklab, var(--color-fd-primary) 14%, transparent) 0%, transparent 70%)',
+          }}
+        />
+        <div className="relative mx-auto flex max-w-3xl flex-col items-center px-6 py-20 text-center">
+          <div className="mb-4 inline-flex size-12 items-center justify-center rounded-full bg-fd-primary/10 text-fd-primary">
+            <Heart className="size-6" />
+          </div>
+          <h2 className="text-2xl font-semibold">{t.sponsorHeading}</h2>
+          <p className="mt-3 max-w-xl text-balance text-fd-muted-foreground">{t.sponsorBody}</p>
+          <a
+            href={SPONSOR_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-fd-primary px-5 py-2.5 font-medium text-fd-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <Heart className="size-4" />
+            {t.sponsorCta}
+          </a>
+          <p className="mt-3 text-xs text-fd-muted-foreground">fairy.hada.io</p>
         </div>
       </section>
     </main>

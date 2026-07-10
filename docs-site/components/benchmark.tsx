@@ -71,9 +71,23 @@ const T = {
     baseline: 'baseline (fastest)',
     note: 'Raw-driver speed differs by language, so compare within a tab rather than across languages by absolute value. Run the filter / aggregate / join scenarios live from the repo: cd bench-site && npm start',
   },
+  zh: {
+    caption: '排序 (ORDER BY) · 50,000 行 × 5 次 · 中位数 ms — 越低越快',
+    kind: { powder: 'Powder', raw: '原生驱动', orm: '典型 ORM' } as Record<string, string>,
+    faster: (n: string) => `比 Powder 慢 ${n}×`,
+    baseline: '基准（最快）',
+    note: '各语言的原生驱动速度不同，因此请在同一标签页内比较，而不要跨语言比较绝对值。可以在仓库中实际运行过滤 / 聚合 / 连接场景：cd bench-site && npm start',
+  },
+  ja: {
+    caption: 'ソート (ORDER BY) · 50,000行 × 5回 · 中央値 ms — 低いほど高速',
+    kind: { powder: 'Powder', raw: '素のドライバ', orm: '代表的な ORM' } as Record<string, string>,
+    faster: (n: string) => `Powder より ${n}× 遅い`,
+    baseline: '基準（最速）',
+    note: '素のドライバの速度は言語ごとに異なるため、絶対値の言語間比較よりタブ内での比較が有意義です。フィルタ・集計・結合シナリオはリポジトリでライブ実行できます: cd bench-site && npm start',
+  },
 };
 
-export function BenchmarkExplorer({ locale = 'ko' }: { locale?: 'ko' | 'en' }) {
+export function BenchmarkExplorer({ locale = 'ko' }: { locale?: 'ko' | 'en' | 'zh' | 'ja' }) {
   const [active, setActive] = useState(DATA[0].key);
   const t = T[locale] ?? T.ko;
   const lang = DATA.find((l) => l.key === active) ?? DATA[0];
