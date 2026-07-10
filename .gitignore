@@ -51,5 +51,11 @@ bench-site/bench/java-bench/lib/
 bench-site/bench/java-bench/out/
 
 #development docs
-docs/
+internal-docs/
 docs-site/
+
+# superpowers scratch state (subagent-driven-development ledger, etc.)
+.superpowers/
+
+#claude
+.claude/

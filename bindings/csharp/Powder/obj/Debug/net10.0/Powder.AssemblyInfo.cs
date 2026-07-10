@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyDescriptionAttribute(("C# binding for the Powder engine — a zero-copy columnar database client with a Ru" +
     "st core."))]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+1ddcff14656d94188b176112423b12aa48181897")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+cf7e76b5f5b76223a90193099fa7e114c621c60d")]
 [assembly: System.Reflection.AssemblyProductAttribute("Powder")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Powder")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

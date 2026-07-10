@@ -1,7 +1,7 @@
 /**
  * Powder ORM end-to-end demo.
  *
- * Workflow this file exercises (the same one `docs/ORM.md` documents):
+ * Workflow this file exercises (the same one `internal-docs/ORM.md` documents):
  *   1. powder init                        -> powder.schema.json (users + posts FK)
  *   2. powder migrate --db demo.db       -> CREATE TABLE ... (FK, dependency order)
  *   3. powder seed --db demo.db --file seed.json

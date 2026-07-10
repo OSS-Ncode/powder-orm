@@ -11,7 +11,7 @@ powder_execute(db, "INSERT INTO t VALUES (?, ?)", "[1, \"alice\"]");
 
 size_t len;
 unsigned char *pcb = powder_query(db, "SELECT * FROM t", NULL, &len);
-/* pcb는 PCB 컬럼 버퍼 (docs/FORMAT.md) — 디코더는 C++ 래퍼 참고 */
+/* pcb는 PCB 컬럼 버퍼 (internal-docs/FORMAT.md) — 디코더는 C++ 래퍼 참고 */
 powder_free_buffer(pcb, len);
 powder_close(db);
 ```

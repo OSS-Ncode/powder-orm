@@ -30,7 +30,7 @@
 | `crates/powder-node`    | napi-rs 바인딩 + TypeScript 래퍼 (`@powder/node`)             |
 | `crates/powder-python`  | PyO3 바인딩 + 순수 Python 래퍼 (`powder`)                     |
 
-와이어 포맷 명세는 [`docs/FORMAT.md`](docs/FORMAT.md) 참고.
+와이어 포맷 명세는 [`internal-docs/FORMAT.md`](internal-docs/FORMAT.md) 참고.
 
 ## Rust
 
