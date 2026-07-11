@@ -31,6 +31,24 @@ Windows (P:\oss-Ncode) ──저장──▶ NAS (\\100.123.184.127\Ncode)
 | (기존) `com.powder.docs-site*.plist` | `/Library/LaunchDaemons/` | serve 데몬 + watch 데몬 |
 | `commit-feed-append.py` | `/Users/server/apps/` | 커밋 1개를 받아 Ollama로 언어별 요약 후 feed.json에 append (이번에 추가) |
 | `commit-feed-backfill.py` | `/Users/server/apps/` | 최초 1회 실행용 — 최근 50개 커밋 백필 (이번에 추가) |
+| `visitor-counter-server.py` | `/Users/server/apps/` | 고유 방문자 카운터(포트 3002), `/api/visit` GET·POST (이번에 추가) |
+| `com.powder.visitor-counter.plist` | `~/Library/LaunchAgents/` | 위 서버를 로그인 시 자동 실행 (이번에 추가) |
+
+## 방문자 카운터 라우팅 (Cloudflare)
+
+`docs.powder-orm.info`의 Published application routes에 경로 규칙이 하나
+추가되어 있다 (Cloudflare Zero Trust → Networks → Connectors → 해당
+커넥터 → Published application routes):
+
+| # | 호스트명 | Path | Service |
+|---|---|---|---|
+| 1 | `docs.powder-orm.info` | `api/*` | `http://localhost:3002` |
+| 2 | `docs.powder-orm.info` | `*` | `http://localhost:3000` |
+
+path가 있는 규칙이 반드시 catch-all(`*`)보다 **위**에 있어야 매칭된다.
+호스트명은 실제 사이트 호스트(`docs.powder-orm.info`)와 정확히 같아야
+함 — 처음 설정할 때 `powder-orm.info`(서브도메인 없음)로 잘못 넣어서
+한참 안 됐던 적이 있음.
 
 ## 왜 SSH loopback으로 실행하나
 
