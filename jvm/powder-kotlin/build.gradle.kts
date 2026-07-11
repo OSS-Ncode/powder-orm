@@ -1,10 +1,8 @@
 plugins {
-    // vanniktech maven-publish 0.37 requires Kotlin plugin 2.2.0+ when applied
-    // alongside the Kotlin JVM plugin in the same project.
-    kotlin("jvm") version "2.2.0"
+    // Version + apply for both plugins come from the root build.gradle.kts
+    // (`apply false`) so this and powder-java share one classloader scope.
+    kotlin("jvm")
     `java-library`
-    // Version + apply come from the root build.gradle.kts (`apply false`) so
-    // this and powder-java share one plugin instance/build service.
     id("com.vanniktech.maven.publish")
 }
 
