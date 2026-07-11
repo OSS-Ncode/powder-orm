@@ -10,7 +10,7 @@ directly. It's the same core every other language reaches across, used natively.
 
 ```toml
 [dependencies]
-powder-core = { path = "crates/powder-core" }   # or a published version
+powder-core = { package = "powder-orm", version = "0.1" }  # crates.io
 ```
 
 Backends are feature-gated: `--features postgres`, `--features mysql` (SQLite

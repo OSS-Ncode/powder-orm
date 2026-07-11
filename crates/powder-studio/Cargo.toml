@@ -1,11 +1,14 @@
 [package]
-name = "powder-studio"
+name = "powder-orm-studio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Powder studio — embedded web dashboard (mobile-friendly, token invites) and AI query generation, separable from the CLI for staged deployment"
+
+[lib]
+name = "powder_studio"
 
 [dependencies]
 powder-core = { workspace = true, features = ["postgres", "mysql", "mssql", "libsql"] }

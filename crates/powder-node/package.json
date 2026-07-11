@@ -1,5 +1,5 @@
 {
-  "name": "@powder/node",
+  "name": "powder-orm",
   "version": "0.1.0",
   "description": "Node.js bindings for the Powder zero-copy columnar database engine",
   "license": "MIT",

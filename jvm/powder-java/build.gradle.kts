@@ -31,9 +31,9 @@ mavenPublishing {
     if (providers.gradleProperty("signingInMemoryKey").isPresent) {
         signAllPublications()
     }
-    coordinates(project.group.toString(), "powder-java", project.version.toString())
+    coordinates(project.group.toString(), "powder-orm-java", project.version.toString())
     pom {
-        name.set("powder-java")
+        name.set("powder-orm-java")
         description.set("Java (JNI) binding for the Powder engine — a zero-copy columnar database client with a Rust core.")
         url.set("https://github.com/OSS-Ncode/powderORM")
         licenses { license { name.set("MIT"); url.set("https://opensource.org/licenses/MIT") } }

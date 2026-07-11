@@ -43,7 +43,7 @@ npm run generate    # 重新生成 src/models.ts（AOT 查询编译）
 ## 3. 第一次查询
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";
 
 const db = powder(await Client.connect("app.db"));

@@ -10,7 +10,7 @@ RustではFFI境界がそもそも存在しません。`powder-core`クレート
 
 ```toml
 [dependencies]
-powder-core = { path = "crates/powder-core" }   # または公開バージョン
+powder-core = { package = "powder-orm", version = "0.1" }  # crates.io
 ```
 
 バックエンドはfeatureで有効化します。`--features postgres`、`--features mysql`

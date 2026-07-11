@@ -10,7 +10,7 @@ description: 直接使用核心的原生客户端
 
 ```toml
 [dependencies]
-powder-core = { path = "crates/powder-core" }   # 或已发布的版本
+powder-core = { package = "powder-orm", version = "0.1" }  # crates.io
 ```
 
 后端通过 feature 开启:`--features postgres`、`--features mysql`

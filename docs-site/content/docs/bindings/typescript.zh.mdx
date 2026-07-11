@@ -17,13 +17,13 @@ npm install
 如果已有项目,只需安装驱动:
 
 ```bash
-npm install @powder/node
+npm install powder-orm
 ```
 
 ## 连接 → 查询
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";   // powder generate 生成的文件
 
 const db = powder(await Client.connect("app.db"));

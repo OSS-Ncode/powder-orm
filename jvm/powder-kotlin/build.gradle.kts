@@ -23,9 +23,9 @@ mavenPublishing {
     if (providers.gradleProperty("signingInMemoryKey").isPresent) {
         signAllPublications()
     }
-    coordinates(project.group.toString(), "powder-kotlin", project.version.toString())
+    coordinates(project.group.toString(), "powder-orm-kotlin", project.version.toString())
     pom {
-        name.set("powder-kotlin")
+        name.set("powder-orm-kotlin")
         description.set("Kotlin DSL for the Powder engine — an ORM-style query builder over the JNI binding.")
         url.set("https://github.com/OSS-Ncode/powderORM")
         licenses { license { name.set("MIT"); url.set("https://opensource.org/licenses/MIT") } }

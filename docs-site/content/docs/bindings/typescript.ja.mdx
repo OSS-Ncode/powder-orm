@@ -17,13 +17,13 @@ npm install
 既存プロジェクトならドライバーのみ。
 
 ```bash
-npm install @powder/node
+npm install powder-orm
 ```
 
 ## 接続 → クエリ
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";   // powder generateが生成したファイル
 
 const db = powder(await Client.connect("app.db"));

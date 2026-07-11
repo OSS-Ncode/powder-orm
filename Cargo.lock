@@ -1674,21 +1674,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "powder-cli"
+name = "powder-ffi"
 version = "0.1.0"
 dependencies = [
- "mysql",
- "postgres",
- "powder-core",
- "powder-studio",
- "rusqlite",
- "serde",
+ "mimalloc",
+ "powder-orm",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "powder-core"
+name = "powder-java"
+version = "0.1.0"
+dependencies = [
+ "jni",
+ "mimalloc",
+ "powder-orm",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "powder-node"
+version = "0.1.0"
+dependencies = [
+ "mimalloc",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "powder-orm",
+]
+
+[[package]]
+name = "powder-orm"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -1706,35 +1724,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "powder-ffi"
+name = "powder-orm-cli"
 version = "0.1.0"
 dependencies = [
- "mimalloc",
- "powder-core",
+ "mysql",
+ "postgres",
+ "powder-orm",
+ "powder-orm-studio",
+ "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "powder-java"
+name = "powder-orm-studio"
 version = "0.1.0"
 dependencies = [
- "jni",
- "mimalloc",
- "powder-core",
+ "getrandom 0.3.4",
+ "powder-orm",
  "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "powder-node"
-version = "0.1.0"
-dependencies = [
- "mimalloc",
- "napi",
- "napi-build",
- "napi-derive",
- "powder-core",
+ "tiny_http",
+ "ureq",
 ]
 
 [[package]]
@@ -1742,21 +1753,10 @@ name = "powder-python"
 version = "0.1.0"
 dependencies = [
  "mimalloc",
- "powder-core",
+ "powder-orm",
  "pyo3",
  "pyo3-async-runtimes",
  "tokio",
-]
-
-[[package]]
-name = "powder-studio"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.3.4",
- "powder-core",
- "serde_json",
- "tiny_http",
- "ureq",
 ]
 
 [[package]]

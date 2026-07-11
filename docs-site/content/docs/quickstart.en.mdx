@@ -43,7 +43,7 @@ Open `powder.schema.json` and VS Code autocompletes tables, columns, and types.
 ## 3. Your first query
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";
 
 const db = powder(await Client.connect("app.db"));

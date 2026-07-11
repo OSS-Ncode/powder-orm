@@ -49,7 +49,7 @@ npm run generate    # src/models.ts 재생성
 이제 첫 쿼리를 짜봅니다:
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";
 
 const db = powder(await Client.connect("app.db"));

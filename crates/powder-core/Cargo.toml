@@ -1,11 +1,14 @@
 [package]
-name = "powder-core"
+name = "powder-orm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Zero-copy columnar database engine core (Powder)"
+
+[lib]
+name = "powder_core"
 
 [features]
 default = []

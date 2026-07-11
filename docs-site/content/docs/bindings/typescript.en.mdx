@@ -17,13 +17,13 @@ npm install
 Already have a project? Just the driver:
 
 ```bash
-npm install @powder/node
+npm install powder-orm
 ```
 
 ## Connect → query
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";   // produced by powder generate
 
 const db = powder(await Client.connect("app.db"));

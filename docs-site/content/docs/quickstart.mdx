@@ -42,7 +42,7 @@ npm run generate    # src/models.ts 재생성 (AOT 쿼리 컴파일)
 ## 3. 첫 쿼리
 
 ```ts
-import { Client } from "@powder/node";
+import { Client } from "powder-orm";
 import { powder } from "./models.js";
 
 const db = powder(await Client.connect("app.db"));

@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "powder"
+name = "powder-orm"
 version = "0.1.0"
 description = "Async, zero-copy columnar database client (Rust core)"
 requires-python = ">=3.9"
