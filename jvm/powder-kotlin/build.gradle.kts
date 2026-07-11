@@ -1,5 +1,7 @@
 plugins {
-    kotlin("jvm") version "2.0.21"
+    // vanniktech maven-publish 0.37 requires Kotlin plugin 2.2.0+ when applied
+    // alongside the Kotlin JVM plugin in the same project.
+    kotlin("jvm") version "2.2.0"
     `java-library`
     id("com.vanniktech.maven.publish") version "0.37.0"
 }
