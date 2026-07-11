@@ -1,0 +1,22 @@
+{
+  "name": "powder-orm-linux-arm64-gnu",
+  "version": "0.1.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "index.linux-arm64-gnu.node",
+  "files": [
+    "index.linux-arm64-gnu.node"
+  ],
+  "description": "Node.js bindings for the Powder zero-copy columnar database engine",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "libc": [
+    "glibc"
+  ]
+}

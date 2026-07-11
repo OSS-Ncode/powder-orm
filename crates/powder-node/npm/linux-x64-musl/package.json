@@ -1,0 +1,22 @@
+{
+  "name": "powder-orm-linux-x64-musl",
+  "version": "0.1.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "index.linux-x64-musl.node",
+  "files": [
+    "index.linux-x64-musl.node"
+  ],
+  "description": "Node.js bindings for the Powder zero-copy columnar database engine",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "libc": [
+    "musl"
+  ]
+}
