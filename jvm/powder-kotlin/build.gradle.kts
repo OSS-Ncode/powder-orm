@@ -3,7 +3,9 @@ plugins {
     // alongside the Kotlin JVM plugin in the same project.
     kotlin("jvm") version "2.2.0"
     `java-library`
-    id("com.vanniktech.maven.publish") version "0.37.0"
+    // Version + apply come from the root build.gradle.kts (`apply false`) so
+    // this and powder-java share one plugin instance/build service.
+    id("com.vanniktech.maven.publish")
 }
 
 java {
