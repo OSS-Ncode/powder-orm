@@ -72,6 +72,7 @@ jobs:
           - { host: ubuntu-latest, target: x86_64-unknown-linux-gnu, label: linux-x64 }
           - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, label: linux-arm64 }
           - { host: ubuntu-latest, target: x86_64-unknown-linux-musl, label: linux-x64-musl }
+          - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, label: linux-arm64-musl }
           - { host: windows-latest, target: x86_64-pc-windows-msvc, label: windows-x64 }
           - { host: windows-11-arm, target: aarch64-pc-windows-msvc, label: windows-arm64 }
     runs-on: ${{ matrix.host }}
@@ -118,6 +119,7 @@ jobs:
           - { host: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { host: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { host: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
     runs-on: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@v4
@@ -222,7 +224,7 @@ jobs:
   crates-io:
     name: Publish to crates.io
     needs: verify-version
-    if: vars.ENABLE_PUBLISH == 'true'
+    if: github.event_name == 'push' && vars.ENABLE_PUBLISH == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC trusted publishing — no CARGO_REGISTRY_TOKEN
@@ -254,7 +256,7 @@ jobs:
   npm-publish:
     name: Publish to npm
     needs: [verify-version, npm-prebuild]
-    if: vars.ENABLE_PUBLISH == 'true'
+    if: github.event_name == 'push' && vars.ENABLE_PUBLISH == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC trusted publishing — no NPM_TOKEN
@@ -291,7 +293,7 @@ jobs:
   python-publish:
     name: Publish to PyPI
     needs: [verify-version, python-wheels, python-sdist]
-    if: vars.ENABLE_PUBLISH == 'true'
+    if: github.event_name == 'push' && vars.ENABLE_PUBLISH == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -311,7 +313,7 @@ jobs:
   nuget-publish:
     name: Publish to NuGet
     needs: [verify-version, native-libs]
-    if: vars.ENABLE_NUGET == 'true'
+    if: github.event_name == 'push' && vars.ENABLE_NUGET == 'true'
     runs-on: ubuntu-latest
     environment: nuget
     permissions:
@@ -331,7 +333,7 @@ jobs:
         shell: bash
         run: |
           base=bindings/csharp/Powder/runtimes
-          declare -A RID=( [macos-arm64]=osx-arm64 [macos-x64]=osx-x64 [linux-x64]=linux-x64 [linux-arm64]=linux-arm64 [linux-x64-musl]=linux-musl-x64 [windows-x64]=win-x64 [windows-arm64]=win-arm64 )
+          declare -A RID=( [macos-arm64]=osx-arm64 [macos-x64]=osx-x64 [linux-x64]=linux-x64 [linux-arm64]=linux-arm64 [linux-x64-musl]=linux-musl-x64 [linux-arm64-musl]=linux-musl-arm64 [windows-x64]=win-x64 [windows-arm64]=win-arm64 )
           for label in "${!RID[@]}"; do
             tb="native/native-$label/powder-native-$label.tar.gz"
             [ -f "$tb" ] || continue
@@ -363,7 +365,7 @@ jobs:
   maven-publish:
     name: Publish to Maven Central
     needs: verify-version
-    if: vars.ENABLE_MAVEN == 'true'
+    if: github.event_name == 'push' && vars.ENABLE_MAVEN == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

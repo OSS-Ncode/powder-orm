@@ -1,24 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "P:\\oss-Ncode\\bindings\\csharp\\Powder.Tests\\Powder.Tests.csproj": {}
+    "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder.Tests/Powder.Tests.csproj": {}
   },
   "projects": {
-    "P:\\oss-Ncode\\bindings\\csharp\\Powder.Tests\\Powder.Tests.csproj": {
+    "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder.Tests/Powder.Tests.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "P:\\oss-Ncode\\bindings\\csharp\\Powder.Tests\\Powder.Tests.csproj",
+        "projectUniqueName": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder.Tests/Powder.Tests.csproj",
         "projectName": "Powder.Tests",
-        "projectPath": "P:\\oss-Ncode\\bindings\\csharp\\Powder.Tests\\Powder.Tests.csproj",
-        "packagesPath": "C:\\Users\\User\\.nuget\\packages\\",
-        "outputPath": "P:\\oss-Ncode\\bindings\\csharp\\Powder.Tests\\obj\\",
+        "projectPath": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder.Tests/Powder.Tests.csproj",
+        "packagesPath": "/Users/wannyjang/.nuget/packages/",
+        "outputPath": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder.Tests/obj/",
         "projectStyle": "PackageReference",
-        "fallbackFolders": [
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
-        ],
         "configFilePaths": [
-          "C:\\Users\\User\\AppData\\Roaming\\NuGet\\NuGet.Config",
-          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config"
+          "/Users/wannyjang/.nuget/NuGet/NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net10.0"
@@ -31,8 +27,8 @@
             "framework": "net10.0",
             "targetAlias": "net10.0",
             "projectReferences": {
-              "P:\\oss-Ncode\\bindings\\csharp\\Powder\\Powder.csproj": {
-                "projectPath": "P:\\oss-Ncode\\bindings\\csharp\\Powder\\Powder.csproj"
+              "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/Powder.csproj": {
+                "projectPath": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/Powder.csproj"
               }
             }
           }
@@ -69,7 +65,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.301/PortableRuntimeIdentifierGraph.json",
+          "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/10.0.301/PortableRuntimeIdentifierGraph.json",
           "packagesToPrune": {
             "Microsoft.CSharp": "(,4.7.32767]",
             "Microsoft.VisualBasic": "(,10.4.32767]",
@@ -347,21 +343,17 @@
         }
       }
     },
-    "P:\\oss-Ncode\\bindings\\csharp\\Powder\\Powder.csproj": {
+    "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/Powder.csproj": {
       "version": "0.1.0",
       "restore": {
-        "projectUniqueName": "P:\\oss-Ncode\\bindings\\csharp\\Powder\\Powder.csproj",
+        "projectUniqueName": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/Powder.csproj",
         "projectName": "Powder",
-        "projectPath": "P:\\oss-Ncode\\bindings\\csharp\\Powder\\Powder.csproj",
-        "packagesPath": "C:\\Users\\User\\.nuget\\packages\\",
-        "outputPath": "P:\\oss-Ncode\\bindings\\csharp\\Powder\\obj\\",
+        "projectPath": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/Powder.csproj",
+        "packagesPath": "/Users/wannyjang/.nuget/packages/",
+        "outputPath": "/Volumes/Ncode/oss-Ncode/bindings/csharp/Powder/obj/",
         "projectStyle": "PackageReference",
-        "fallbackFolders": [
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
-        ],
         "configFilePaths": [
-          "C:\\Users\\User\\AppData\\Roaming\\NuGet\\NuGet.Config",
-          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config"
+          "/Users/wannyjang/.nuget/NuGet/NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net10.0"
@@ -408,7 +400,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.301/PortableRuntimeIdentifierGraph.json",
+          "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/10.0.301/PortableRuntimeIdentifierGraph.json",
           "packagesToPrune": {
             "Microsoft.CSharp": "(,4.7.32767]",
             "Microsoft.VisualBasic": "(,10.4.32767]",

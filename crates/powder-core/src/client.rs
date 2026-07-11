@@ -273,7 +273,14 @@ impl Client {
 
     /// Run a statement that does not return rows (INSERT/UPDATE/DDL); returns
     /// the number of affected rows.
+    ///
+    /// Parameterized calls are limited to a single statement (SQL-injection
+    /// guard — see [`crate::guard`]); multi-statement scripts stay available
+    /// through parameterless calls, which are by construction trusted text.
     pub async fn execute(&self, sql: &str, params: Vec<Value>) -> Result<usize> {
+        if !params.is_empty() {
+            crate::guard::reject_stacked(sql)?;
+        }
         match &self.inner {
             Backend::Sqlite(s) => s.execute(sql, params).await,
             #[cfg(feature = "postgres")]
@@ -308,7 +315,11 @@ impl Client {
     }
 
     /// Run a query and return the result set as a columnar [`RecordBatch`].
+    ///
+    /// Always a single statement — a stacked `...; DROP TABLE ...` is
+    /// rejected before it reaches any backend (see [`crate::guard`]).
     pub async fn query(&self, sql: &str, params: Vec<Value>) -> Result<RecordBatch> {
+        crate::guard::reject_stacked(sql)?;
         match &self.inner {
             Backend::Sqlite(s) => s.query(sql, params).await,
             #[cfg(feature = "postgres")]
@@ -361,6 +372,7 @@ impl Client {
     /// Run a query and return the result already serialized as a PCB buffer,
     /// shared through the query cache where the backend supports it.
     pub async fn query_bytes_shared(&self, sql: &str, params: Vec<Value>) -> Result<Arc<Vec<u8>>> {
+        crate::guard::reject_stacked(sql)?;
         match &self.inner {
             Backend::Sqlite(s) => s.query_bytes_shared(sql, params).await,
             #[cfg(feature = "postgres")]
@@ -437,8 +449,17 @@ impl SqliteClient {
         let sql = sql.to_string();
         let cache = self.cache.clone();
         self.with_conn(move |conn| {
-            let sql_params = to_sql_values(params);
-            let n = conn.execute(&sql, rusqlite::params_from_iter(sql_params.iter()))?;
+            let n = if params.is_empty() {
+                // Parameterless calls are trusted batches (DDL scripts,
+                // seeds) — run every statement, like the server backends.
+                // `conn.execute` would silently drop everything after the
+                // first statement.
+                conn.execute_batch(&sql)?;
+                conn.changes() as usize
+            } else {
+                let sql_params = to_sql_values(params);
+                conn.execute(&sql, rusqlite::params_from_iter(sql_params.iter()))?
+            };
             // Writes invalidate every cached result.
             if let Ok(mut c) = cache.lock() {
                 c.clear();

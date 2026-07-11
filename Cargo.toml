@@ -7,8 +7,10 @@ members = [
     "crates/powder-java",
     "crates/powder-ffi",
     "crates/powder-cli",
-    "bench-site/bench/rust-bench",
 ]
+# NOTE: bench-site/ is .gitignored, so its rust-bench crate must NOT be a
+# workspace member — CI has no bench-site checkout and cargo would fail to load
+# the manifest. Run the benchmark crate standalone from bench-site/ instead.
 
 # The language-binding crates build C dynamic libraries and need their own
 # toolchains (napi-cli / maturin). Keep the core in the default build set and

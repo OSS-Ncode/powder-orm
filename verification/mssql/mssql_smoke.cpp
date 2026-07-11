@@ -47,7 +47,10 @@ int main(int argc, char** argv) try {
     std::printf("backend: %s\n", url.c_str());
     powder::Client db(url);
 
-    // T-SQL DDL (2008-compatible): no DROP TABLE IF EXISTS.
+    // T-SQL DDL (2008-compatible): no DROP TABLE IF EXISTS. Children first -
+    // other suites (CLI migrate) may have left FK-linked tables behind.
+    db.execute("IF OBJECT_ID('order_items','U') IS NOT NULL DROP TABLE order_items");
+    db.execute("IF OBJECT_ID('products','U') IS NOT NULL DROP TABLE products");
     db.execute("IF OBJECT_ID('orders','U') IS NOT NULL DROP TABLE orders");
     db.execute("IF OBJECT_ID('customers','U') IS NOT NULL DROP TABLE customers");
     db.execute("CREATE TABLE customers (id BIGINT PRIMARY KEY, name NVARCHAR(200), tier NVARCHAR(40), active BIT)");
