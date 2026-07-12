@@ -1,4 +1,0 @@
-{
-  "title": "データベース",
-  "pages": ["index", "sqlite", "postgres", "mysql", "cockroachdb", "sqlserver", "libsql"]
-}
